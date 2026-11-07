@@ -1,0 +1,10 @@
+{
+  "name": "focuschangeai-pc",
+  "productName": "FocusChangeAI PC",
+  "version": "1.0.0",
+  "description": "Do tap trung qua webcam - ban ung dung doc lap, chay khong can mang",
+  "main": "main.js",
+  "author": "FocusChangeAI",
+  "license": "UNLICENSED",
+  "private": true
+}
