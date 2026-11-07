@@ -14,6 +14,14 @@ const path = require('path');
 
 const DIST = path.join(__dirname, 'dist');
 
+// Measured in this app: with the window behind another one the HUD dropped from 17 FPS to 0, because
+// Chromium throttles requestAnimationFrame for occluded/background windows. A classroom tool must keep
+// watching while the teacher checks a spreadsheet, and a run silently measured at 0 FPS is worse than a
+// slow one - it is a wrong number in the record.
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+
 // FC_DEBUG=1 writes one line per permission request. Without it the shipped app logs nothing.
 const DEBUG_LOG = process.env.FC_DEBUG ? path.join(app.getPath('userData'), 'perm.log') : null;
 function dlog(msg) {
