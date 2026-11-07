@@ -1,0 +1,17 @@
+{
+  "name": "FocusChangeAI - Đo tập trung qua webcam",
+  "short_name": "FocusChangeAI",
+  "description": "Đo sự tập trung của học sinh qua webcam, chạy hoàn toàn trên máy tính của lớp học.",
+  "lang": "vi",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#fffbfe",
+  "theme_color": "#6650a4",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

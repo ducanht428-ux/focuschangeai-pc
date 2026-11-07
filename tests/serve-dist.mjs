@@ -9,6 +9,7 @@ const TYPES = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript',
   '.wasm': 'application/wasm', '.onnx': 'application/octet-stream', '.task': 'application/octet-stream',
   '.tflite': 'application/octet-stream', '.json': 'application/json', '.css': 'text/css',
+  '.png': 'image/png',
 };
 
 createServer(async (req, res) => {
