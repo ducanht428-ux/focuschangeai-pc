@@ -47,6 +47,9 @@
      onPrimary label, fully rounded, labelLarge. The phone's own button rows
      (MainActivity.kt:1181-1255 and :1895-1993) are what these are copied from. */
   .btnrow { display:flex; gap:8px; flex-wrap:wrap; padding:4px 0; }
+  /* .btnrow sets display, which beats the user-agent [hidden] rule, so the attribute alone would not
+     hide anything. Rows that get hidden at runtime have to say so themselves. */
+  .btnrow[hidden] { display:none; }
   button { font-family:inherit; font-size:14px; font-weight:500; letter-spacing:.01em; line-height:1.25;
            color:#fffbfe; background:#6650a4; border:0; border-radius:20px; padding:10px 24px;
            min-height:40px; cursor:pointer; }
@@ -56,6 +59,9 @@
   #tech { border-top:1px solid rgba(28,27,31,0.12); margin-top:8px; padding-top:8px;
           color:#5f5f5f; font-size:12px; }
   #tech button, #tech select { font-size:12px; padding:6px 14px; min-height:0; border-radius:14px; }
+  /* The offline-pack link is a link, not a control, but it has to read as the buttons beside it. */
+  #tech a.dl { display:inline-block; font-size:12px; padding:6px 14px; border-radius:14px;
+               color:#fffbfe; background:#6650a4; text-decoration:none; }
   label.ctl { display:inline-flex; align-items:center; gap:6px; }
   /* The roster picker sits in the phone-shaped column, so it is sized like the buttons beside it
      instead of inheriting the browser's default form control. */
@@ -176,6 +182,13 @@
       <div class="btnrow">
         <span id="fps">--</span><span id="verdict">&nbsp;</span><span id="det"></span><span id="boost"></span><span id="rows"></span>
       </div>
+      <!-- The same build, as one file a machine without internet can run. The row is hidden until the
+           archive is really next to this page, so a copied folder (which has no archive inside it) never
+           offers a dead link. -->
+      <div class="btnrow" id="dlrow" hidden>
+        <a class="dl" id="dllib" href="FocusChangeAI-PC.zip" download>Tải bản offline (27 MB)</a>
+        <span id="dlhint">Giải nén rồi mở Chay-Webcam-PC.bat để chạy không cần mạng.</span>
+      </div>
       <div id="log"></div>
     </div>
   </div>
@@ -198,6 +211,30 @@ if (location.protocol === 'file:') {
     if (start) start.disabled = true;
   });
 }
+// Show the offline-pack row only when there is really something to download. A same-origin archive is
+// checked with a HEAD request, which costs nothing and never transfers 27 MB; an off-site one cannot be
+// probed at all (cross-origin HEAD throws), so it is shown as soon as the link is filled in. Under
+// file:// fetch is blocked, so the row stays hidden there instead of throwing.
+function showDownloadRow() {
+  const row = document.getElementById('dlrow');
+  const link = document.getElementById('dllib');
+  if (!row || !link) return;
+  let target;
+  try { target = new URL(link.getAttribute('href'), location.href); } catch (e) { return; }
+  if (location.protocol === 'file:') return;
+  if (target.origin !== location.origin) {
+    if (target.protocol !== 'http:' && target.protocol !== 'https:') return;
+    // The answer is opaque (cross-origin), but the promise only resolves if some host actually replied,
+    // so this doubles as the offline check: a machine with no network gets no button.
+    fetch(target.href, { method: 'HEAD', mode: 'no-cors' }).then(() => { row.hidden = false; })
+      .catch(() => {});
+    return;
+  }
+  fetch(target.pathname + target.search, { method: 'HEAD' }).then((r) => {
+    if (r.ok) row.hidden = false;
+  }).catch(() => {});
+}
+window.addEventListener('DOMContentLoaded', showDownloadRow);
 </script>
 
 <script type="module">
