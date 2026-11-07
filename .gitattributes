@@ -1,0 +1,11 @@
+*.html text eol=lf
+*.js   text eol=lf
+*.mjs  text eol=lf
+*.css  text eol=lf
+*.json text eol=lf
+*.ps1  text eol=lf
+*.bat  text eol=crlf
+*.onnx binary
+*.wasm binary
+*.task binary
+*.tflite binary

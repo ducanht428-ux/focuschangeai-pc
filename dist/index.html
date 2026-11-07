@@ -1,0 +1,2022 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Bản chạy trên máy tính của FocusChangeAI: khung hình camera một bên, cột số liệu đúng như cửa sổ camera lớp và bản điện thoại ở bên kia, đo bằng cùng một thuật toán.">
+<title>FocusChangeAI - Đo qua webcam trên máy tính</title>
+<style>
+  /* Two arrangements from one set of blocks, because two different requests own this page.
+     On a phone-shaped window the screen is the phone's screen: MainActivity's content is one Column on
+     the Material3 light surface with 16 dp of padding and no Card or Surface anywhere
+     (MainActivity.kt:1043-2057), so there are no dark panels here - every text colour in hud.mjs was
+     picked against surface 0xFFFFFBFE with onSurface 0xFF1C1B1F, which is what the phone's theme
+     resolves to (Type.kt overrides only titleLarge; Theme.kt never touches background or surface).
+     On a wide window the operator asked for the picture on one side and all of the numbers on the other,
+     which is the camera window's arrangement. Nothing is duplicated and no block is moved to get it:
+     #numcol (numbers, then the operator's buttons) and #camcol (picture, then the browser-only controls)
+     are stacked in that order by a column flexbox, which is already the phone's reading order, and the
+     media query only lays the same two containers out side by side. */
+  html, body { height:100%; }
+  body { background:#fffbfe; color:#1c1b1f; font-family:"Segoe UI", Roboto, Arial, sans-serif; margin:0; }
+  #screen { display:flex; flex-direction:column; height:100vh; max-width:460px; margin:0 auto;
+            padding:16px 16px 0; box-sizing:border-box; }
+  /* The stacked view scrolls the page instead of squeezing the columns: with a fixed 100vh box and a
+     window shorter than the content, flex shrinks #numcol to its floor and its button rows paint on top
+     of the camera controls below. The split view keeps the fixed box because its own column scrolls. */
+  body:not(.wide) #screen { height:auto; min-height:100vh; }
+  /* One column, the phone's proportions: stats get weight 0.8 and the camera box weight 1
+     (MainActivity.kt:1146-1151 and :1997-2001). Both are floors rather than pure flex, because a short
+     browser window used to squeeze the numbers column to zero height and leave only the camera. */
+  #numcol { flex:1 1 auto; min-height:120px; display:flex; flex-direction:column; }
+  #camcol { flex:0 0 auto; display:flex; flex-direction:column; min-width:0; }
+  #top { flex:0 0 auto; }
+  #hudwrap { flex:1 1 auto; min-height:80px; overflow-y:auto; }
+  #cambox { flex:0 0 auto; position:relative; width:100%; aspect-ratio:4/3; max-height:30vh;
+            background:#000; overflow:hidden; margin-top:6px; }
+  video.camvid, canvas#view { position:absolute; inset:0; width:100%; height:100%; object-fit:cover;
+                transform:scaleX(-1); }
+  #hud { font-family:inherit; }
+  /* min-height keeps the phone's blank spacer row a row: an empty div would collapse and the column
+     would lose the gap the alert line is supposed to sit inside. */
+  #hud .row, #top .row { white-space:pre-wrap; min-height:1em; }
+  #sei-chart { display:block; background:transparent; }
+  #hud.hidden { display:none; }
+
+  /* Filled Material3 buttons, as Compose's Button renders them on this theme: primary container,
+     onPrimary label, fully rounded, labelLarge. The phone's own button rows
+     (MainActivity.kt:1181-1255 and :1895-1993) are what these are copied from. */
+  .btnrow { display:flex; gap:8px; flex-wrap:wrap; padding:4px 0; }
+  button { font-family:inherit; font-size:14px; font-weight:500; letter-spacing:.01em; line-height:1.25;
+           color:#fffbfe; background:#6650a4; border:0; border-radius:20px; padding:10px 24px;
+           min-height:40px; cursor:pointer; }
+  button:disabled { background:rgba(28,27,31,0.12); color:rgba(28,27,31,0.38); cursor:default; }
+  /* The controls the phone does not have, because a browser tab must be told where its pixels come
+     from. Kept below the camera so the screen itself reads as the phone. */
+  #tech { border-top:1px solid rgba(28,27,31,0.12); margin-top:8px; padding-top:8px;
+          color:#5f5f5f; font-size:12px; }
+  #tech button, #tech select { font-size:12px; padding:6px 14px; min-height:0; border-radius:14px; }
+  label.ctl { display:inline-flex; align-items:center; gap:6px; }
+  /* The roster picker sits in the phone-shaped column, so it is sized like the buttons beside it
+     instead of inheriting the browser's default form control. */
+  #bindrow select { font:inherit; font-size:14px; padding:9px 12px; border:1px solid rgba(28,27,31,.24);
+                    border-radius:20px; min-height:40px; background:#fffbfe; color:#1c1b1f; }
+  #log { font-family:Consolas, monospace; font-size:11px; white-space:pre-wrap; color:#5f5f5f;
+         max-height:140px; overflow:auto; }
+  #statline { font-size:12px; color:#5f5f5f; }
+
+  /* The two-column arrangement. It hangs off body.wide rather than straight off a media query because
+     the class is set by one function that also honours ?split=1, so the operator can force the split in a
+     narrow window and the layout has exactly one source of truth instead of two that can drift apart.
+     The condition itself is in the matchMedia call near the bottom of this file: a window at least
+     880 px wide, or the parameter. */
+  body.wide #screen { flex-direction:row; max-width:none; margin:0; padding:16px; gap:0 18px; }
+  /* Picture left, numbers right, which is the camera window's arrangement and the order the operator
+     asked for. The DOM stays numbers-first so the stacked view under 880 px is still the phone's
+     reading order, and flex order is what flips the two columns without duplicating anything. */
+  body.wide #camcol { order:1; flex:1 1 54%; }
+  body.wide #numcol { order:2; flex:1 1 46%; min-width:300px; }
+  body.wide #cambox { flex:1 1 auto; min-height:0; max-height:none; width:100%; margin:0; aspect-ratio:auto; }
+  /* contain, not cover: the legend plate and every label sit at the picture's own edges
+     (plate() clamps x to the frame width, and drawYolo prints at cv.width and at cv.height - 24), so a
+     box that is not the stream's ratio would cut them off under cover. The bars are the box's own
+     background and are painted by #cambox, not by the video, so the split layout shows the room inside
+     the picture and black beside it - which is also why the two layers must keep the SAME fit here:
+     the canvas is only over the picture the viewer sees if both letterbox identically.
+     Narrow keeps cover for the phone's edge-to-edge look; its box is capped at 30vh, so on a window
+     under 880 px wide the bottom plate can be cropped. Measured 2026-11-05: the wide split is the
+     booth layout and ?split=1 forces it, so this only bites a deliberately narrow window. */
+  body.wide video.camvid, body.wide canvas#view { object-fit:contain; }
+  body.wide #tech { flex:0 0 auto; }
+  body.wide #hudwrap { min-height:0; }
+  body.wide #oprow { flex:0 0 auto; }
+</style>
+</head>
+<body>
+<div id="screen">
+  <div id="numcol">
+    <!-- Everything above the fold is the phone's header block (MainActivity.kt:1058-1143): title, status,
+         SEI line, sparkline, then the warning rows. It does not scroll on the phone either. -->
+    <div id="top"></div>
+    <div id="hudwrap"><div id="hud"></div></div>
+
+    <!-- Two of the phone's button rows have a browser equivalent that actually does something, so they
+         are labelled and placed exactly as the phone places them (MainActivity.kt:1235-1246, :1895-1908).
+         The third control here, "Cỡ số liệu", is this leg's own: the phone's type scale belongs to a
+         6-inch screen and a desk monitor has to decide how many of the same rows fit at once. The rest of
+         the phone's buttons need a habit profile, a CSV logger or a speaker a tab does not have, so they
+         are not faked here - see #tech below. -->
+    <div class="btnrow" id="oprow">
+      <button id="sensbtn">Độ nhạy: Vừa</button>
+      <button id="recal">Hiệu chuẩn lại</button>
+      <button id="fitbtn">Cỡ số liệu: điện thoại</button>
+    </div>
+    <!-- The phone's two binding buttons (MainActivity.kt:1181-1188) exist here because this leg now has
+         the thing they bind: a learned profile. A dropdown instead of the phone's dialog, because the
+         roster on a browser tab is short and the dialog's job (picking one of N) is exactly what a select
+         does. The third button is this leg's own and the phone has no equivalent: the profile lives in
+         this browser only, so "start over" has to be reachable without clearing site data by hand.
+         The last two are for the machine this leg runs on. The phone is handed to one child; this tab sits
+         on a school computer that several children sit at in turn, and a dropdown cannot answer who just
+         sat down - so the face is learned once per student and the switch is proposed by the camera
+         instead. The dropdown stays, because a proposal has to be overridable. -->
+    <div class="btnrow" id="bindrow">
+      <label class="ctl">Học sinh <select id="student" aria-label="Học sinh được gắn hồ sơ"></select></label>
+      <button id="addstu">Thêm HS</button>
+      <button id="forgetstu">Xóa hồ sơ đã học</button>
+      <button id="learnface" title="Giữ 4 giây trước camera để máy nhận ra em này lần sau">Học mặt HS này</button>
+      <label class="ctl">Tự nhận diện
+        <select id="autoid" aria-label="Tự chuyển hồ sơ theo khuôn mặt">
+          <option value="on">bật</option>
+          <option value="off">tắt</option>
+        </select>
+      </label>
+      <label class="ctl">Ghi cùng lúc
+        <select id="recpeers" aria-label="Ghi điểm cho cả những em không được chọn"
+          title="Bật = mỗi em máy nhận ra trong khung hình có một phiên đang lưu vào hồ sơ của chính em đó. Tắt = chỉ dán tên và ô cảnh báo, chỉ em đang được gắn hồ sơ mới được ghi.">
+          <option value="on" selected>bật</option>
+          <option value="off">tắt</option>
+        </select>
+      </label>
+    </div>
+  </div>
+
+  <div id="camcol">
+    <div id="cambox"><canvas id="view" width="640" height="480"></canvas></div>
+
+    <div id="tech">
+      <div class="btnrow">
+        <button id="start">Mở camera</button>
+        <button id="stop" disabled>Dừng</button>
+        <button id="reload">Chạy lại với cài đặt trên</button>
+      </div>
+      <div class="btnrow">
+        <label class="ctl">Bộ xử lý
+          <select id="delegate"><option value="GPU">GPU (WebGL)</option><option value="CPU">CPU</option></select>
+        </label>
+        <label class="ctl">Độ phân giải
+          <select id="res"><option value="640">640x480</option><option value="480">480x360</option><option value="320">320x240</option></select>
+        </label>
+        <label class="ctl">Số mặt
+          <select id="nfaces" title="2 mặt = dán tên cả hai em trong cùng khung hình, nhưng mỗi khung phải tính thêm một lần lưới điểm">
+            <option value="1">1 (nhanh nhất)</option>
+            <option value="2" selected>2 cùng khung</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+          </select>
+        </label>
+        <label class="ctl">Camera
+          <select id="cam"><option value="">Camera mặc định</option></select>
+        </label>
+        <label class="ctl">Hộp người
+          <select id="rate"><option value="2">2 lần mỗi giây</option><option value="4">4 lần mỗi giây</option><option value="8">8 lần mỗi giây (bản Python)</option></select>
+        </label>
+      </div>
+      <div id="statline">Chưa mở camera. Bấm "Mở camera" rồi chọn "Cho phép" khi trình duyệt hỏi. Phím: F hộp mặt &middot; Y hộp người &middot; O số liệu đè khung hình &middot; H ẩn cột số liệu.</div>
+      <div class="btnrow">
+        <span id="fps">--</span><span id="verdict">&nbsp;</span><span id="det"></span><span id="boost"></span><span id="rows"></span>
+      </div>
+      <div id="log"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// A copied folder gets opened two different ways on a stranger's machine: through the .bat, which
+// serves http://localhost:8731, or by double-clicking this file. Under file:// the browser refuses the
+// module script below, so every handler on the page stays unbound and the operator sees a finished-
+// looking screen that answers nothing. This script is not a module, so it still runs there and says
+// what to do instead of failing silently.
+if (location.protocol === 'file:') {
+  window.addEventListener('DOMContentLoaded', () => {
+    const box = document.getElementById('log');
+    if (box) {
+      box.textContent = 'Không mở được bằng file://: trình duyệt chặn mô-đun JavaScript và camera ở địa '
+        + 'chỉ này. Hãy chạy Chay-Webcam-PC.bat (tự mở http://localhost:8731), hoặc mở trang đã đăng.';
+    }
+    const start = document.getElementById('start');
+    if (start) start.disabled = true;
+  });
+}
+</script>
+
+<script type="module">
+import { FaceLandmarker, FilesetResolver, ObjectDetector } from './js/vision_bundle.mjs';
+import { MonitorSession, HABIT_AUTOSAVE_MS } from './js/session.mjs';
+import { readLight, faceRoi } from './js/measure.mjs';
+import { ImageEnhancer } from './js/enhance.mjs';
+import { CHART_ROW, C, DOT, EYE_DRAW, IRIS_FIRST, PHONE_TYPE, hudLines, rgb, seiColour, toHud } from './js/hud.mjs';
+import { alertSentence } from './js/alerts.mjs';
+import { HC } from './js/habit.mjs';
+import { DETECT_CONF, DETECT_MAX_RESULTS, PersonIds, YOLO_FACE, YOLO_OBJECT, YOLO_PERSON, YOLO_TEXT,
+  assignObjects, ownerOf, readBoxes, topNearby, vi } from './js/detect.mjs';
+import { loadYoloEngine } from './js/yolo.mjs';
+import { FaceMatcher, IDENTITY, faceSignature, faceGate, assignFaces } from './js/identity.mjs';
+import { BREAK_DETECT_MS } from './js/params.mjs';
+import { addStudent, clearFace, clearProfile, currentId, faceRoster, loadProfile, nameOf,
+  saveFace, saveProfile, setCurrent, students } from './js/store.mjs';
+
+const $ = (id) => document.getElementById(id);
+const cv = $('view');
+const ctx = cv.getContext('2d', { willReadFrequently: true });
+// The pixels are read through this canvas, never through #view. #view only ever shows the picture and
+// the overlays, so in normal light nothing is copied into it at all and the frame the model gets is the
+// video element itself. Measured on the C270 through real Chrome on 2026-11-05: copying a 640x480 frame
+// costs 7 ms on its own and 13 ms inside a running session - a third of the 33 ms frame budget spent to
+// discover that the room is bright. The phone never pays that because its camera hands over a Y plane.
+const probe = document.createElement('canvas');
+const pctx = probe.getContext('2d', { willReadFrequently: true });
+let video = null, landmarker = null, raf = 0, running = false;
+const log = (m) => { $('log').textContent += m + '\n'; $('log').scrollTop = 1e9; };
+
+const session = new MonitorSession();
+
+// The dark-classroom stage: the phone's own CLAHE + denoise controller, ported to the canvas.
+// enhanceAuto is its switch, the same one the phone has (auto on, off only by the operator).
+// lastPts is the previous frame's face box: the phone also decides its region from the box the last
+// detection left behind (ImageEnhancer.process's boxFresh), so a lifted frame is a frame behind the
+// face that asked for it. Key G toggles, and the column's "Xử lý ảnh" row always says what is running.
+const enhancer = new ImageEnhancer();
+let enhanceAuto = true;
+let lastPts = null;
+let lastLight = null;
+// Everything the face layer can put in one frame. lastPts above is the ONE face this leg measures -
+// the phone has no second head to score - so the array stays here and only gets handed over after
+// idTick() has decided which head that is (measureIdx) and what each head should be called
+// (faceLabels).
+let lastFaces = null;
+let measureIdx = 0;
+let faceLabels = null;
+// The assignment rows behind those labels, kept so the peer pass below can tell which head belongs to
+// which student, and one MonitorSession per extra head.
+//
+// A peer session is a full session: with "Ghi cùng lúc" on it learns its own student's profile the way
+// the measured one does, because two children sitting in front of the same camera both deserve a run of
+// their own instead of one score and one caption. What keeps it honest is that it only ever writes the
+// profile the face bank named - never the dropdown's student, never a stranger, and never a second time
+// for a child the session above is already recording. Measured cost of one of these on a synthetic face
+// that has calibrated: 0.075 ms per frame (bench-peer.mjs), against the 11.9 ms the landmark pass already
+// takes for the whole frame, so the recording is not what this machine pays for.
+let faceRows = null;
+let peerAlerts = null;
+const peerSessions = new Map();
+// A bystander who has been out of frame for this long has stopped sitting with us, so their run is
+// committed and closed and the next sitting calibrates again. It is the phone's own face-lost bar
+// (params.mjs:89, the same 20 s that wipes the measured child's work clock), not a number invented for
+// the peer path - a child who leans out for three seconds keeps their run open.
+const PEER_GONE_MS = BREAK_DETECT_MS;
+// How often the room's brightness is re-read while the enhancer is idle. The controller that consumes
+// the reading switches on a 4-second hysteresis (MIN_TOGGLE_MS in enhance.mjs), so this is far finer
+// than any decision it feeds; it exists only to stop paying 13 ms of frame budget every frame.
+const LIGHT_READ_MS = 160;
+let probeAtMs = -1e9;
+
+// ---------------------------------------------------------------------------
+// The learned profile
+// ---------------------------------------------------------------------------
+/**
+ * The web copy of the phone's habit layer: one student is bound, every run of that student is measured
+ * into a session, five usable sessions of at least ten minutes in total move eight alert thresholds part
+ * of the way toward that student's own numbers, and the column starts quoting them.
+ *
+ * Where it lives matters more than how it works. The phone writes its profiles into app-private files and
+ * can upload them to Firestore; this leg writes localStorage keys in this browser and nothing else. A
+ * profile learned at the booth desk therefore never reaches the teacher's phone or the other machine, and
+ * a run in an incognito window is forgotten when the window closes. Both are said out loud below rather
+ * than left for the viewer to assume, because the screen otherwise looks like the phone.
+ */
+let bound = null;
+let habitSaveAtMs = 0;
+
+function persistProfile(p) {
+  if (!p) return;
+  if (!saveProfile(p)) {
+    log('  TRÌNH DUYỆT KHÔNG GHI ĐƯỢC: hồ sơ của "' + p.name + '" không lưu xuống được (hết chỗ, hoặc cửa sổ'
+      + ' ẩn danh). Số liệu vẫn hiện và vẫn đo, nhưng mất khi đóng tab.');
+  }
+}
+
+/** The phone's habitStatus suffix, spoken once when the profile crosses the bar mid-run. */
+function readyLine() {
+  return 'Hồ sơ vừa đủ chuẩn (' + bound.sessionCount() + ' phiên, '
+    + (bound.totalValidMs() / 60000).toFixed(0) + ' phút hợp lệ). Ngưỡng riêng áp dụng từ lần hiệu chuẩn'
+    + ' kế tiếp, đúng như trên điện thoại.';
+}
+
+function commitHabit(closing) {
+  if (!bound) return;
+  const wasReady = bound.isReady();
+  const out = closing ? session.endHabitSession() : session.saveHabitSession();
+  if (!out) return;
+  if (out.changed) persistProfile(bound);
+  if (closing) {
+    const min = (out.summary.validMs / 60000).toFixed(1);
+    log(out.reason
+      ? 'Không học phiên này: ' + out.reason + ' (' + min + ' phút hợp lệ). Hồ sơ giữ '
+        + bound.sessionCount() + ' phiên.'
+      : 'Đã học ' + min + ' phút hợp lệ vào hồ sơ "' + bound.name + '" - '
+        + bound.sessionCount() + ' phiên, ' + (bound.totalValidMs() / 60000).toFixed(0) + ' phút.');
+  }
+  if (!wasReady && bound.isReady()) log(readyLine());
+}
+
+function fillStudents(selected) {
+  const sel = $('student');
+  sel.innerHTML = '';
+  for (const s of students()) {
+    const o = document.createElement('option');
+    o.value = s.id;
+    o.textContent = s.name;
+    sel.appendChild(o);
+  }
+  sel.value = selected || currentId();
+}
+
+// ---------------------------------------------------------------------------
+// Who is sitting there.
+//
+// The dropdown above binds a profile to a run. On a school computer the question that has to be answered
+// every time somebody sits down is WHICH profile, and a dropdown cannot answer it - the camera can.
+// faceSignature() turns the 478-point mesh this page already computes into 20 ratios that survive the
+// child leaning back or shifting 20 cm from the lens, and the bank keeps several poses per student
+// instead of a mean, because yaw - not distance, not light - is what moves those numbers.
+//
+// Two rules are what make this safe to leave switched on:
+//  - a switch needs an empty chair first. The face has to have left the frame for IDENTITY.VACANCY_MS
+//    before a new name gets in, so a misread can never re-bind a sitting that is already being scored:
+//    the frames measured while one student was on screen stay that student's, whichever way the match
+//    goes. This is the same reason bindStudent commits the old run before it loads the new profile.
+//  - the answer is a proposal. It takes IDENTITY.NEED agreeing frames, a runner-up that is clearly
+//    worse, and the operator's dropdown still overrides it at any moment.
+const faceM = new FaceMatcher();
+let learningId = null;          // student being enrolled right now, or null
+let learnUntilMs = 0, learnNextMs = 0, learnGot = 0, learnSkipped = 0, learnSkipNote = '';
+let idAtMs = 0;
+let idStatus = null;            // {text, colour} - what the frame plate says about identity
+let absentSinceMs = 0;          // when the face left the frame; 0 while a face is on screen
+let lastGapMs = 0;              // how long the chair stood empty in the seat change just seen
+let seatArmed = true;           // the next accepted identity may bind, until it does
+let lastSwitchMs = 0;
+let autoIdOn = true;
+// Whether the children the camera names but nobody selected also get a run written into their own
+// profile. Default on, because "một lúc nhiều id" is the point of pointing the camera at a row of desks.
+let recPeersOn = true;
+
+/** Pull every bank back out of storage: once at startup, and after a student is deleted. */
+function reloadFaces() {
+  faceM.setBank(faceRoster());
+  faceM.resetVotes();
+}
+
+/**
+ * One frame of the identity layer, one head in it or several.
+ *
+ * The empty frames matter as much as the full ones: "the chair was empty for two seconds" is the gate
+ * every switch is measured against, and it can only be timed from here.
+ *
+ * @param {Array<Array>|null} faces  res.faceLandmarks for this frame, in the model's own order
+ */
+function idTick(faces, t) {
+  faceLabels = null;
+  faceRows = null;
+  const n = faces ? faces.length : 0;
+  if (!n) {
+    if (!absentSinceMs) absentSinceMs = t;
+    idStatus = null;
+    faceM.resetVotes();
+    return;
+  }
+  if (absentSinceMs) {
+    lastGapMs = t - absentSinceMs;
+    if (lastGapMs >= IDENTITY.VACANCY_MS) seatArmed = true;
+    absentSinceMs = 0;
+  }
+
+  // More than one head: this branch names them and stops. Nothing below the return can bind a
+  // profile while two children are on screen. With one head the signatures are not computed here -
+  // the single-face path below takes one per VOTE_MS, and mapping the whole array every frame is cost
+  // this machine did not have before and does not need.
+  if (n > 1) {
+    multiTick(faces, faces.map(faceSignature), faces.map((f) => faceGate(f, 'match')));
+    return;
+  }
+
+  const pts = faces[0];
+  measureIdx = 0;
+  if (learningId) {
+    learnTick(pts, t);
+    return;
+  }
+  if (!autoIdOn) {
+    idStatus = { text: 'tự nhận diện đang tắt', colour: C.GRAY };
+    return;
+  }
+  if (t - idAtMs < IDENTITY.VOTE_MS) return;
+  idAtMs = t;
+
+  const sig = faceSignature(pts);
+  if (!sig) {
+    idStatus = { text: 'mặt quá nhỏ để nhận diện', colour: C.HINT_AMBER };
+    return;
+  }
+  const r = faceM.match(sig);
+  if (!r) {
+    idStatus = { text: 'chưa học mặt cho ai', colour: C.HINT_AMBER };
+    return;
+  }
+  const gate = faceGate(pts, 'match');
+  if (gate) {
+    // Refused with the numbers still on the screen: an operator watching a child who will not be named
+    // has to be able to tell "the machine is unsure" from "that head is turned away", and the second one
+    // is fixed by asking the child to face the lens rather than by pressing anything.
+    idStatus = {
+      text: gateNote(gate) + ' · không chắc tên · ' + nameOf(r.id) + ' d ' + r.dist.toFixed(2)
+        + '/r ' + r.radius.toFixed(2),
+      colour: C.HINT_AMBER,
+    };
+    // A turned frame must also break the streak, or three frames of a straight face plus one glance at
+    // the wall would still add up to a switch.
+    faceM.resetVotes();
+    return;
+  }
+  const voted = faceM.vote(r.ok ? r.id : null);
+  const who = nameOf(r.id);
+  idStatus = {
+    text: 'nhận diện ' + who + ' · d ' + r.dist.toFixed(2) + '/r ' + r.radius.toFixed(2)
+      + (r.second ? ' · kề ' + r.secondRatio.toFixed(2) : '')
+      + (r.ok ? ' · ' + faceM.voting.count + '/' + IDENTITY.NEED : ' · không chắc'),
+    colour: r.ok ? (r.id === bound.id ? C.SEI_GOOD : C.PRIMARY) : C.HINT_AMBER,
+  };
+  if (!voted || !r.ok || !seatArmed) return;
+  if (voted === currentId()) {
+    seatArmed = false;
+    return;
+  }
+  // Two auto-switches cannot come closer than MIN_HOLD_MS apart, so one bad bank cannot churn the roster.
+  if (t - lastSwitchMs < IDENTITY.MIN_HOLD_MS) return;
+  lastSwitchMs = t;
+  seatArmed = false;
+  bindStudent(voted, 'Tự nhận diện: ' + who + ' (d ' + r.dist.toFixed(2) + ' trong bán kính '
+    + r.radius.toFixed(2) + ', ' + IDENTITY.NEED + ' khung liên tiếp, ghế đã trống '
+    + (lastGapMs / 1000).toFixed(1) + ' s)');
+}
+
+/**
+ * Two or more heads in one frame: give each a name, give each its own warning box, score the one the
+ * dropdown holds - and, with "Ghi cùng lúc" on, run a session for every other head the bank can name.
+ *
+ * The no-switch rule is why this is its own branch rather than a loop around the code above. A binding
+ * is a commitment - bindStudent() closes the run in progress and starts scoring the next child - and
+ * with two children in shot the camera's answer walks back and forth every time the clearer face turns
+ * toward the lens. A run that changes hands mid-sitting is worth less than no run at all, so the name
+ * here never moves the page; the dropdown stays the only way to switch who the column describes.
+ *
+ * This is the honest answer to "hai em ngồi cạnh nhau thì sao": cả hai em đều được gọi tên, cả hai đều có
+ * ô cảnh báo riêng, và từ bản này cả hai đều có phiên đang lưu vào hồ sơ của chính mình (peerTick) - trừ
+ * khi người lớn tắt "Ghi cùng lúc". Hồ sơ nào được ghi là do máy nhận diện khuôn mặt quyết định, nên chỉ
+ * ghi khi ngân mặt đã học em đó; em chưa nhận ra thì không có số và cũng không có phiên.
+ */
+/**
+ * One short sentence for a frame the identity layer refused, carrying the number it was judged on.
+ *
+ * The gate is a threshold on geometry, so the operator sees the geometry: how far the mouth and the nose
+ * were from the straight-on measure, and - for a head at the edge - nothing but the fact that the frame
+ * lost part of it. Never a silent skip: three of these in a row means the child is sitting wrong, and
+ * that is only actionable if the reason is on the screen.
+ */
+function gateNote(g) {
+  if (g.reason === 'yaw') {
+    return 'quay ngang (lệch miệng ' + Math.round(100 * g.asym) + '%, mũi lệch '
+      + Math.round(100 * g.shift) + '% khoảng cách hai mắt)';
+  }
+  if (g.reason === 'clip') return 'đầu chạm biên khung hình';
+  if (g.reason === 'small') return 'mặt quá nhỏ để nhận diện';
+  return 'lưới điểm không vững';
+}
+
+function multiTick(faces, sigs, gates) {
+  if (learningId) {
+    const who = nameOf(learningId);
+    learningId = null;
+    log('Đang học mặt cho "' + who + '" thì có ' + faces.length
+      + ' người cùng xuất hiện - đã dừng học, vì không ai chắc khuôn mặt nào là em đó. '
+      + 'Để một mình em ấy trong khung hình rồi bấm lại "Học mặt HS này".');
+    idStatus = null;
+    faceLabels = null;
+    faceRows = null;
+    return;
+  }
+  const rows = faceRows = assignFaces(sigs, faceM, gates);
+  measureIdx = pickMeasure(faces, sigs, rows);
+  let named = 0;
+  faceLabels = rows.map((row, i) => {
+    const nose = faces[i][1];
+    const owner = nose && boxes ? ownerOf(boxes.persons, nose.x * cv.width, nose.y * cv.height) : null;
+    const tag = owner ? '#' + owner.id + ' ' : '';
+    // A head the gate refused keeps the name it already had - its run must not stop because it looked
+    // down at its book - but the plate says why no NEW decision was made on this frame.
+    const gate = gates && gates[i];
+    const note = gate ? ' · ' + gateNote(gate) : '';
+    if (!sigs[i]) return { i, text: tag + 'mặt quá nhỏ để nhận diện', colour: C.GRAY };
+    if (!row.cands.length) return { i, text: tag + 'chưa học mặt cho ai', colour: C.HINT_AMBER };
+    if (row.id) {
+      named++;
+      return { i, text: tag + nameOf(row.id) + (row.id === bound.id ? ' (đang đo)' : '') + note,
+        colour: gate ? C.HINT_AMBER : (row.id === bound.id ? C.SEI_GOOD : C.PRIMARY) };
+    }
+    return { i,
+      text: tag + (row.taken ? 'trùng tên bạn bên cạnh' : 'chưa nhận ra')
+        + ' · ' + row.ratio.toFixed(2) + ' lần ngưỡng'
+        + (row.ambiguous ? ' · hai em quá giống' : '') + note,
+      colour: C.HINT_AMBER };
+  });
+  // How many profiles this frame is writing at once: the one the dropdown holds, plus one per named head
+  // the bank recognised. assignFaces gives a student to at most one head (its taken-set), so the count of
+  // distinct ids is the count of runs open in this minute - and a stranger adds none of them.
+  const ids = new Set(rows.filter((r) => r && r.id).map((r) => r.id));
+  const recN = recPeersOn ? Math.max(1, ids.size) : 1;
+  const gateN = (gates || []).filter(Boolean).length;
+  idStatus = {
+    text: faceLabels.length + ' người trong khung · gọi tên được ' + named + '/'
+      + faceLabels.length + ' · mỗi em một ô cảnh báo riêng · '
+      + (recN > 1
+        ? 'đang lưu đồng thời ' + recN + ' hồ sơ, không tự đổi hồ sơ'
+        : (recPeersOn ? 'chỉ 1 hồ sơ trong khung được ghi, không tự đổi hồ sơ'
+          : 'chỉ ghi điểm 1 em (tắt "Ghi cùng lúc"), không tự đổi hồ sơ'))
+      + (gateN ? ' · ' + gateN + ' em quay ngang hoặc sát biên, tên giữ nguyên chứ không đoán thêm' : ''),
+    colour: C.HINT_AMBER,
+  };
+}
+
+/**
+ * Commit one bystander's run, on the same two clocks the measured child is committed on.
+ *
+ * The profile it writes is the one that session was opened with, taken from the face bank - never the
+ * dropdown's student, and never a head the bank could not name. commit() keys the record by the session's
+ * own start time (session.mjs:250-267), so repeating this every 30 seconds updates one entry instead of
+ * appending a run per save, exactly as the measured autosave does.
+ */
+function commitPeer(peer, closing, t) {
+  const p = peer.s.profile;
+  const out = closing ? peer.s.endHabitSession() : peer.s.saveHabitSession();
+  peer.saveAt = t;
+  if (!p || !out) return;
+  if (out.changed) persistProfile(p);
+  if (closing) {
+    const min = (out.summary.validMs / 60000).toFixed(1);
+    log(out.reason
+      ? 'Không học phiên của "' + p.name + '": ' + out.reason + ' (' + min
+        + ' phút hợp lệ). Hồ sơ giữ ' + p.sessionCount() + ' phiên.'
+      : 'Đã học ' + min + ' phút hợp lệ vào hồ sơ "' + p.name + '" - camera tự ghi, không cần chọn em đó'
+        + ' (' + p.sessionCount() + ' phiên, ' + (p.totalValidMs() / 60000).toFixed(0) + ' phút).');
+  }
+}
+
+/**
+ * One warning box per head, each computed from that child's own profile - and, with "Ghi cùng lúc" on,
+ * each written into that profile as a run of its own.
+ *
+ * The landmark pass already returned every face in the frame, so scoring the second head costs only the
+ * arithmetic inside MonitorSession.process - 0.075 ms per frame, measured on a calibrated synthetic face
+ * in bench-peer.mjs, against the 11.9 ms MediaPipe has already spent for all of them. So the bystanders
+ * get real sessions rather than captions: three children in front of one webcam are three IDs recorded in
+ * the same minute, and only the operator's dropdown still decides who the numbers column describes.
+ *
+ * Two things keep that honest. A head the matcher cannot name gets no numbers and no run - printing
+ * thresholds over a stranger would dress up a guess as a measurement of someone the machine has never
+ * seen. And one sitting is never written twice: pickMeasure hands the column the head that matches the
+ * bound profile (see below), assignFaces gives a student to at most one head, and bindStudent drops the
+ * bystander session the moment a child becomes the selected one - so the child in the column can never
+ * also be a peer here.
+ */
+function peerTick(faces, blend, t, light) {
+  peerAlerts = [];
+  const seen = new Set();
+  for (let i = 0; i < faces.length; i++) {
+    if (i === measureIdx) continue;
+    const row = faceRows && faceRows[i];
+    const nose = faces[i][1];
+    const owner = nose && boxes ? ownerOf(boxes.persons, nose.x * cv.width, nose.y * cv.height) : null;
+    const tag = (owner ? '#' + owner.id + ' ' : '')
+      + (row && row.id ? nameOf(row.id) : 'Em chưa nhận diện được');
+    if (!row || !row.id) {
+      peerAlerts.push({ i, text: tag + ' · không có cảnh báo riêng, máy chưa biết em là ai',
+        colour: C.HINT_AMBER });
+      continue;
+    }
+    seen.add(row.id);
+    let peer = peerSessions.get(row.id);
+    if (!peer) {
+      // A first session opens only on a frame the gate accepted. The run written into a profile is a
+      // claim about who sat there, and a head caught mid-turn is the one piece of evidence that cannot
+      // support it - while a run that is already open keeps ticking, because stopping it would be the
+      // same claim in the other direction.
+      const g = faceGate(faces[i], 'match');
+      if (g) {
+        peerAlerts.push({ i, text: tag + ' · ' + gateNote(g) + ', chưa mở phiên cho em này',
+          colour: C.GRAY });
+        continue;
+      }
+      peer = { s: new MonitorSession(), sens: null, w: 0, h: 0, at: t, saveAt: t, goneAt: 0 };
+      peer.s.setProfile(loadProfile(row.id));
+      peerSessions.set(row.id, peer);
+    }
+    // Both of these are the measured session's own settings, so they are copied rather than assumed:
+    // a peer judged at a different sensitivity than the column would be a second, quieter opinion.
+    if (peer.sens !== sensLevel) { peer.s.setSensitivity(sensLevel); peer.sens = sensLevel; }
+    if (peer.w !== cv.width || peer.h !== cv.height) {
+      peer.s.setFrameSize(cv.width, cv.height);
+      peer.w = cv.width;
+      peer.h = cv.height;
+    }
+    peer.at = t;
+    peer.goneAt = 0;
+    const rr = peer.s.process(faces[i], { faceBlendshapes: [(blend || [])[i]] }, t, light,
+      contextNearby(faces[i]));
+    const sei = rr.sei === null || rr.sei === undefined ? '--' : Math.round(rr.sei);
+    if (!rr.calibrated) {
+      const c = rr.calibration || { frames: 0, target: 60 };
+      peerAlerts.push({ i, text: tag + ' · đang hiệu chuẩn ' + c.frames + '/' + c.target,
+        colour: C.GRAY });
+      continue;
+    }
+    // The run is written while it is still happening, so a tab that dies mid-sitting keeps what the
+    // bystander earned; the closing commit only comes when they leave the frame.
+    if (recPeersOn && t - peer.saveAt >= HABIT_AUTOSAVE_MS) commitPeer(peer, false, t);
+    const sentence = alertSentence(rr.alertCode, rr.personalSeiMean, toHud(rr).qualityNote);
+    peerAlerts.push({ i,
+      text: tag + ' · SEI ' + sei + ' · ' + (sentence || 'không cảnh báo')
+        + (recPeersOn ? ' · đang lưu vào hồ sơ em này' : ' · chỉ dán tên, tắt ghi cùng lúc'),
+      colour: rr.alertHeld ? C.HINT_AMBER : rr.alertCode ? C.ALERT_ORANGE : C.SEI_GOOD });
+  }
+  // A child who leaves the frame is paused, not averaged - session.pause is the same call the measured
+  // session gets for an empty chair, so a peer's number cannot drop because someone stepped out. Out for
+  // the phone's own break length is a different thing: that sitting is over, so its run is committed and
+  // closed and the next one calibrates from scratch, rather than resuming an accumulator that has been
+  // sitting on stale frames.
+  for (const [id, peer] of peerSessions) {
+    if (seen.has(id)) continue;
+    peer.s.pause(t);
+    if (!peer.goneAt) peer.goneAt = t;
+    if (t - peer.goneAt >= PEER_GONE_MS) {
+      if (recPeersOn) commitPeer(peer, true, t);
+      peerSessions.delete(id);
+    }
+  }
+}
+
+/**
+ * Which head the measured column follows while several are on screen.
+ *
+ * The phone scores one child per sitting, so this leg keeps doing that even when a second head
+ * wanders into frame. Order of precedence: the head that matches the bound profile (so a parent or a
+ * classmate leaning in cannot move the numbers), then the head this column was already measuring if
+ * its mesh is still there, then simply the largest - a face half out of frame is a worse subject than
+ * the one looking at the lens.
+ */
+function pickMeasure(faces, sigs, rows) {
+  const mine = rows.findIndex((r) => r && r.id && r.id === bound.id);
+  if (mine >= 0) return mine;
+  if (measureIdx < faces.length && sigs[measureIdx]) return measureIdx;
+  let best = 0, widest = -1;
+  for (let i = 0; i < faces.length; i++) {
+    const a = faces[i][234], b = faces[i][454];
+    const span = a && b ? Math.hypot(a.x - b.x, a.y - b.y) : 0;
+    if (span > widest) { widest = span; best = i; }
+  }
+  return best;
+}
+
+/**
+ * Where a per-face plate goes: the nose's mirrored column, one line above the top of the head.
+ *
+ * plate() takes the coordinates the operator SEES, so natural landmark x becomes cv.width minus it -
+ * the same conversion drawYolo uses for its box labels. y comes from landmark 10, the forehead, and
+ * rowY keeps the plate of a head at the top edge on screen instead of off it.
+ */
+function facePlateAt(pts) {
+  const nose = pts[1], top = pts[10];
+  return {
+    x: nose ? cv.width - nose.x * cv.width : 4,
+    y: rowY((top ? top.y : 0) * cv.height - 22),
+  };
+}
+
+/**
+ * The four seconds after "Học mặt HS này": keep a signature every LEARN_MS and say what came out.
+ *
+ * The log line ends with the separation from the nearest other student rather than a bare success,
+ * because "đã học 14 khung" says nothing an operator can act on - two students whose banks sit closer
+ * than the acceptance radius is the one failure this feature has, and it has to be visible at enrolment
+ * time, not discovered after the wrong child's profile has been scored for an hour.
+ */
+function learnTick(pts, t) {
+  if (t < learnNextMs) return;
+  learnNextMs = t + IDENTITY.LEARN_MS;
+  // Only clean frames enter the bank. A sample enrolled from a turned head teaches the matcher a
+  // signature no straight-on frame will ever reach again AND widens that student's radius to cover it,
+  // so a sloppy enrolment does not merely fail to help - it makes the next child matchable to this one.
+  // The 'learn' threshold is looser than the one that decides a name, because the bank is the only place
+  // a pose ever gets recorded.
+  const gate = faceGate(pts, 'learn');
+  if (gate) { learnSkipped++; learnSkipNote = gateNote(gate); }
+  const sig = gate ? null : faceSignature(pts);
+  if (sig && faceM.addSample(learningId, sig)) {
+    // store.mjs is the writer; the bank in memory and the bank on disk must not be allowed to disagree.
+    if (!saveFace(learningId, faceM.samples(learningId))) {
+      log('  Trình duyệt từ chối ghi: mặt vừa học chỉ giữ tới khi nạp lại trang.');
+    }
+    learnGot++;
+  }
+  if (t < learnUntilMs) {
+    idStatus = { text: 'đang học mặt: ' + learnGot + ' khung'
+      + (learnSkipped ? ' · bỏ ' + learnSkipped + ' khung ' + learnSkipNote : ''),
+      colour: C.HINT_AMBER };
+    return;
+  }
+  const id = learningId;
+  learningId = null;
+  idStatus = null;
+  const n = faceM.count(id);
+  if (!n) {
+    log('Không học được khung mặt nào cho "' + nameOf(id) + '": '
+      + (learnSkipped
+        ? 'cả ' + learnSkipped + ' khung đều bị bỏ (' + learnSkipNote + ') - để em ấy hướng mặt vào'
+          + ' ống kính và cách camera đủ gần rồi bấm lại'
+        : 'mặt quá nhỏ trong khung, hoặc lưới điểm không vững') + '.');
+    return;
+  }
+  const sep = faceM.separation(id);
+  const r = faceM.radius(id);
+  // Two facts the operator needs before believing the next name: how many frames the gate threw away
+  // (a bank of fourteen straight-on frames recognises straight-on faces only), and whether distances
+  // are being weighted yet - which needs a second student, so the first enrolment always reads plain.
+  log('Đã học ' + n + '/' + IDENTITY.SAMPLES + ' khung mặt cho "' + nameOf(id)
+    + '" · bán kính chấp nhận ' + r.toFixed(2)
+    + (learnSkipped ? ' · đã bỏ ' + learnSkipped + ' khung ' + learnSkipNote : '')
+    + ' · so khớp ' + (faceM.weightsActive()
+      ? 'có trọng số theo nhiễu đo được của từng số đo.'
+      : 'chưa có trọng số (cần từ 2 em, mỗi em từ 2 khung).'));
+  if (!sep.length) {
+    log('  Chưa có học sinh thứ hai để so. Máy này chỉ nhận diện được khi có ít nhất hai em đã học mặt.');
+  } else {
+    const near = sep[0];
+    log('  Em gần nhất "' + nameOf(near.id) + '" cách ' + near.dist.toFixed(2) + ' - '
+      + (near.dist > r * 1.2
+        ? 'đủ xa bán kính ' + r.toFixed(2) + ', tách được hai em.'
+        : 'QUÁ SÁT bán kính ' + r.toFixed(2) + ', dễ nhận nhầm. Bấm "Học mặt HS này" thêm lần nữa cho mỗi em, quay đầu chậm trong 4 giây.'));
+  }
+  // A fresh bank is a reason to re-arm the seat gate even if nobody stood up in between.
+  seatArmed = true;
+}
+
+/**
+ * List the cameras this machine actually has.
+ *
+ * Only useful after a camera has been allowed once: before that, browsers return empty labels and no
+ * device ids, which is why the dropdown starts as the single "mặc định" entry and is refilled on every
+ * successful open. The chosen id is applied by the next "Mở camera" / "Chạy lại với cài đặt trên", the
+ * same way the delegate and resolution dropdowns already work.
+ */
+async function fillCameras() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+  let devs;
+  try {
+    devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput');
+  } catch (e) {
+    log('  Không liệt kê được danh sách camera: ' + String(e.message).slice(0, 70));
+    return;
+  }
+  // Before the page is allowed a camera, Chrome hands back entries whose deviceId is empty. Those are
+  // not selectable and an empty value would collide with "Camera mặc định", so they are dropped.
+  devs = devs.filter((d) => d.deviceId);
+  const sel = $('cam');
+  const keep = sel.value;
+  sel.innerHTML = '';
+  const first = document.createElement('option');
+  first.value = '';
+  first.textContent = 'Camera mặc định' + (devs.length > 1 ? ' (' + devs.length + ' camera)' : '');
+  sel.appendChild(first);
+  devs.forEach((d, i) => {
+    const o = document.createElement('option');
+    o.value = d.deviceId;
+    o.textContent = (d.label || 'Camera ' + (i + 1)).slice(0, 64);
+    sel.appendChild(o);
+  });
+  if (keep && [...sel.options].some((o) => o.value === keep)) sel.value = keep;
+  if (devs.length > 1) log('  ' + devs.length + ' camera trên máy này - chọn đúng cái ở ô "Camera" rồi bấm "Chạy lại với cài đặt trên".');
+}
+
+/**
+ * Switch this machine to another student.
+ *
+ * The run under the old name is committed to the OLD profile first - the same reason the phone holds a
+ * binding lock across the switch (MainActivity.kt:2404-2412): frames measured while a student was on the
+ * screen must not become that next student's baseline.
+ */
+function bindStudent(id, why) {
+  // An enrolment in flight belongs to the name that was on screen when the button was pressed. Switching
+  // students mid-press must not silently save those frames onto the new one.
+  learningId = null;
+  faceM.resetVotes();
+  const prevProfile = session.profile;
+  const verdict = session.endHabitSession();
+  if (prevProfile && verdict) {
+    if (verdict.changed) persistProfile(prevProfile);
+    if (verdict.reason && prevProfile !== null) {
+      log('Phiên của "' + prevProfile.name + '" không được học: ' + verdict.reason + '.');
+    }
+  }
+  bound = loadProfile(id);
+  session.setProfile(bound);
+  // This child is now measured by the session above, so the copy that existed to record them as a
+  // bystander has to go - but its run belongs to this name and closes under it first, the same way the
+  // previous student's run above did. Dropping the object instead would throw away minutes already sat.
+  const asPeer = peerSessions.get(id);
+  if (asPeer) {
+    if (recPeersOn) commitPeer(asPeer, true, performance.now());
+    peerSessions.delete(id);
+  }
+  setCurrent(id);
+  fillStudents(id);
+  // The autosave clock restarts with the identity: a 30-second tick inherited from the previous student
+  // would write the new one's first frames before they amount to anything worth logging.
+  habitSaveAtMs = performance.now();
+  log((why ? why + ': ' : '') + 'Đang học hồ sơ "' + bound.name + '" - ' + bound.sessionCount()
+    + ' phiên đã lưu, ' + (bound.totalValidMs() / 60000).toFixed(0) + ' phút hợp lệ'
+    + (bound.isReady() ? ', đủ chuẩn.' : ', cần ' + Math.max(0, HC.MIN_SESSIONS - bound.sessionCount())
+      + ' phiên đạt nữa.'));
+}
+
+fillStudents();
+bindStudent(currentId(), null);
+reloadFaces();
+{
+  const n = faceM.students().length;
+  log(n
+    ? 'Nhận diện khuôn mặt: đã học cho ' + n + ' học sinh trên máy này ('
+      + faceM.students().map((s) => nameOf(s) + ' ' + faceM.count(s) + ' khung').join(', ') + ').'
+    : 'Nhận diện khuôn mặt: chưa học em nào. Mở camera, chọn đúng học sinh trong ô "Học sinh", rồi bấm "Học mặt HS này" và giữ yên 4 giây.');
+  log('  Hai em cùng một khung hình: máy dán tên lên từng đầu, mỗi đầu có một ô cảnh báo riêng tính theo '
+    + 'hồ sơ của chính em đó, và với "Ghi cùng lúc" đang bật thì mỗi em đều có một phiên ĐANG LƯU vào hồ '
+    + 'sơ của em đó - một khung hình quay được nhiều id cùng lúc, không cần chọn từng em. Trang vẫn không '
+    + 'tự đổi và cột số liệu vẫn chỉ nói về em đang được gắn. Em chưa nhận diện được sẽ hiện ô "máy chưa '
+    + 'biết em là ai" thay vì một con số bịa, và không được lưu gì. Đặt "Số mặt" = 1 nếu cần khung hình '
+    + 'chạy nhanh hơn, tắt "Ghi cùng lúc" nếu không muốn tên do máy tự đoán ghi vào hồ sơ.');
+}
+
+// The SEI curve the phone draws under its header. The phone keeps one sample per second and at most
+// 120 of them (MainActivity.kt:5123-5136, HISTORY_SIZE=120 at :375), so the curve is a two-minute
+// window - not the last four seconds at 30 FPS, which is what sampling every frame would show.
+const SEI_HISTORY_MAX = 120;
+const SEI_SAMPLE_MS = 1000;
+const seiHistory = [];
+let seiSampleAtMs = 0;
+
+// The phone's Canvas paints nothing but the landmark dots (MainActivity.kt:2019-2052), so the dots are
+// always on and the two overlays this leg can add - the crop box and the numbers - sit behind keys.
+let showBox = false;
+let numbersOnFrame = false;
+
+// Layer 1 as well: the Python window starts with its boxes on and Y hides them (main.py:741), so this
+// leg uses the same default. The phone has no detector at all - nothing in the APK tracks a person -
+// which is exactly why Y exists: one key press returns this screen to the phone's picture.
+let showYolo = true;
+
+// The cadence for the second model, and why it is not the Python leg's detect_fps: 8. Measured on this
+// machine's GPU: FaceLandmarker costs 11.9 ms a pass and EfficientDet-lite0 130 ms (212 ms on CPU, and
+// only 3 ms cheaper at 320x240, so the cost is the model boot and readback, not the pixels). At 30
+// frames a second the loop spends about 357 ms of each second on landmarks, leaving ~640 ms for
+// everything else - 8 box passes would need 1040 ms of it. 2 a second costs 260 ms and keeps the 30 FPS
+// floor with room for the frame's light reading; 8 is offered so a faster machine can use the Python
+// leg's cadence and watch the FPS figure answer for itself. Between passes the last boxes stay on screen.
+// What changed on 2026-11-05: the YOLO11n pass now runs in an ort worker (js/yolo.mjs), so it no longer
+// freezes the tab while it computes - the cadence is still the knob for lite0, whose vendored MediaPipe
+// bundle genuinely will not boot inside a worker ("ModuleFactory not set").
+const DETECT_RATES = { 2: 500, 4: 250, 8: 125 };
+let detectEveryMs = DETECT_RATES[2];
+let detector = null;
+let detectAtMs = 0;
+let detectCostMs = 0;
+let boxes = null;
+
+// YOLO answers on a later tick than the frame it looked at, so only one pass may be in flight.
+// detStamps counts finished passes, because "2 lần mỗi giây" is only true of a machine that manages it.
+let detectBusy = false;
+const detStamps = [];
+// What the scene term took off the last measured frame, kept so the footer can say it and the log can
+// mention it once instead of every frame. 0 is also the answer when nothing has been detected.
+let contextPenaltyNow = 0;
+// Where the milliseconds of one frame actually go, as an exponential mean over the last ~20 frames.
+// "hơi lag" is a claim about feel; only these five numbers say which stage to fix, and the P key prints
+// them. Nothing here changes a measurement - it only times the code that already ran.
+const perf = { land: 0, light: 0, enh: 0, proc: 0, draw: 0, paint: 0 };
+function perfAdd(key, ms) { perf[key] = perf[key] ? perf[key] * 0.9 + ms * 0.1 : ms; }
+const perfMs = (v) => (v < 10 ? v.toFixed(1) : v.toFixed(0));
+// How long a head may vanish and keep its number is the Python leg's own track_ttl_ms: 15000
+// (config.yaml:67), which is detect.mjs's default. It stays fixed when the cadence changes, because the
+// leg it came from counts milliseconds, not passes.
+const personIds = new PersonIds();
+
+// The same four levels the phone's button cycles through, in its order (MainActivity.kt:1236-1245).
+const SENS_NAMES = ['Thấp', 'Vừa', 'Cao', 'Rất cao'];
+let sensLevel = 1;
+session.setSensitivity(sensLevel);
+
+// ---------------------------------------------------------------------------
+// The numbers column: hud.mjs owns the rows, this only paints them
+// ---------------------------------------------------------------------------
+const hudEl = $('hud');
+const topEl = $('top');
+let rowEls = [];
+let chartCanvas = null;
+// The rows the last frame produced, kept so a scale change can repaint and re-measure the column without
+// waiting for the next camera frame - which matters most when there is no camera running yet at all.
+let lastLines = [];
+
+// The phone's type scale is a fact about a 6-inch screen; hud.mjs and hud.py both print in it, and
+// hud-check compares it. On the 1366x768 monitor this build was measured on, the column's rows need
+// about 940 px of height while the numbers side of a split screen has about 490 - so a phone-scale
+// column on that screen scrolls, and no arrangement of two columns changes that arithmetic. The scale
+// below shrinks every row by one factor: the words, the order, the colours, the weights and the
+// relative sizes between rows all stay exactly what hud.mjs produces, and only the size moves.
+// "dien thoai" is the honest default for a judge comparing the two screens; the other two exist so the
+// operator can read more of the column at a glance without scrolling.
+const TEXT_STEPS = [
+  { name: 'điện thoại', k: 1 },
+  { name: 'vừa', k: 0.8 },
+  { name: 'nhỏ', k: 0.68 },
+];
+let textStep = 0;
+let textScale = TEXT_STEPS[0].k;
+// ?fit=phone means "never move my type scale on your own", so the automatic pick below must stand down
+// rather than quietly resize the column the operator asked to compare at the phone's own size.
+let fitLock = false;
+
+/**
+ * Pick the largest offered step the numbers column can actually carry, measured on this window.
+ *
+ * The ratio of the column's content height to its viewport height says how much has to come off; the
+ * header shares the column and grows with the same factor, so the answer is chosen from the offered
+ * steps instead of solved exactly. Only the size moves: hud.mjs still supplies the words, the order,
+ * the colours and the weight of every row.
+ */
+function autoFit() {
+  if (fitLock) return;
+  const box = $('hudwrap');
+  if (!box.clientHeight) return;
+  const ratio = box.scrollHeight / box.clientHeight;
+  let step = TEXT_STEPS.length - 1;
+  for (let i = 0; i < TEXT_STEPS.length; i++) {
+    // 1.02 so a column that already fits, or misses by a rounding row, keeps the phone's own scale
+    // instead of jumping to "vừa" for a few pixels.
+    if (ratio * TEXT_STEPS[i].k <= 1.02) { step = i; break; }
+  }
+  if (step === textStep && ratio <= 1.02) return;
+  setTextStep(step);
+  paintRows(lastLines);
+}
+
+function setTextStep(step) {
+  textStep = step;
+  textScale = TEXT_STEPS[step].k;
+  $('fitbtn').textContent = 'Cỡ số liệu: ' + TEXT_STEPS[step].name;
+  // The sparkline's height is set in the row rather than derived from font-size, so the next paint has
+  // to rebuild the rows to pick up the new scale. paintRows rebuilds whenever the pool is empty.
+  rowEls = [];
+}
+
+/**
+ * Split the column where the phone's scrollable area starts.
+ *
+ * On the phone the title, status, SEI line, sparkline and warning rows sit above a Column with
+ * weight(0.8f) that scrolls (MainActivity.kt:1143-1151), and that scrolled Column's first line is
+ * "Student". Here the same boundary keeps the header pinned, so scrolling the numbers cannot hide the
+ * score the way a single long column would.
+ */
+function splitColumn(lines) {
+  const i = lines.findIndex((l) => l.text.startsWith('Học sinh:'));
+  return i < 0 ? [[], lines] : [lines.slice(0, i), lines.slice(i)];
+}
+
+/**
+ * The column is one div per HUD line, rebuilt only when the row count changes.
+ *
+ * The line count is not constant: the phone puts an extra warning row above the column whenever an
+ * alert fires, so a fixed-size pool would silently drop it.
+ */
+function buildRows(lines) {
+  topEl.textContent = '';
+  hudEl.textContent = '';
+  rowEls = [];
+  chartCanvas = null;
+  const [head, stats] = splitColumn(lines);
+  for (const [parent, group] of [[topEl, head], [hudEl, stats]]) {
+    for (const l of group) {
+      const el = document.createElement('div');
+      el.className = 'row';
+      parent.appendChild(el);
+      rowEls.push(el);
+      if (l.text === CHART_ROW) {
+        const c = document.createElement('canvas');
+        c.id = 'sei-chart';
+        c.width = parent.clientWidth || 428;
+        c.height = Math.round(44 * textScale);
+        el.appendChild(c);
+        chartCanvas = c;
+      }
+    }
+  }
+}
+
+/**
+ * Paint one HUD line with the phone's own type scale.
+ *
+ * The size in the row is the Python window's preview geometry; PHONE_TYPE is the Compose style the
+ * phone actually renders, and hud.mjs tags every row with that style. Painting from the style is what
+ * makes this screen read as the phone's screen rather than as the same words in browser-sized text.
+ * textScale multiplies every row by the same factor, so a row's style tag still says which Compose
+ * style it came from and the column keeps its internal proportions.
+ */
+function paintRows(lines) {
+  if (rowEls.length !== lines.length) buildRows(lines);
+  lines.forEach((l, i) => {
+    const el = rowEls[i];
+    const t = PHONE_TYPE[l.style] || PHONE_TYPE.bodyLarge;
+    if (l.text === CHART_ROW) {
+      const w = (el.parentNode || topEl).clientWidth;
+      if (w && chartCanvas.width !== w) chartCanvas.width = w;
+      const h = Math.round(44 * textScale);
+      if (chartCanvas.height !== h) chartCanvas.height = h;
+      return;
+    }
+    const style = `font-size:${(t.px * textScale).toFixed(2)}px; line-height:${t.lh}; font-weight:${t.weight};`
+      + ` letter-spacing:${t.ls || 0}px; color:${rgb(l.colour)};`;
+    if (el.getAttribute('style') !== style) el.setAttribute('style', style);
+    if (el.textContent !== l.text) el.textContent = l.text;
+  });
+  if (chartCanvas) drawSeiChart(chartCanvas);
+}
+
+/** The 44 dp sparkline under the SEI header, drawn the phone's way (MainActivity.kt:1077-1109). */
+function drawSeiChart(c) {
+  const g = c.getContext('2d');
+  g.clearRect(0, 0, c.width, c.height);
+  if (seiHistory.length < 2) return;
+  const h = c.height;
+  const w = c.width;
+  // The 60-point guide line is Color.Gray at 40 per cent, and the step is the full 120-point window
+  // divided by 119, so a short history sits at the left instead of stretching to fill the box.
+  g.strokeStyle = 'rgba(128,128,128,0.4)';
+  g.lineWidth = 1;
+  g.beginPath();
+  g.moveTo(0, h * (1 - 60 / 100));
+  g.lineTo(w, h * (1 - 60 / 100));
+  g.stroke();
+  const step = w / (SEI_HISTORY_MAX - 1);
+  const colour = seiColour(seiHistory[seiHistory.length - 1]);
+  g.strokeStyle = `rgb(${colour[0]},${colour[1]},${colour[2]})`;
+  g.lineWidth = 3;
+  g.beginPath();
+  seiHistory.forEach((v, i) => {
+    const x = i * step;
+    const y = h * (1 - v / 100);
+    if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
+  });
+  g.stroke();
+}
+
+/**
+ * How much of the column the window really shows, counted from the rows themselves.
+ *
+ * "hiện full số liệu" is a claim about pixels, so it is measured rather than asserted. The header block
+ * is pinned above the scroll area, so its rows are always on screen and only the scrolling part has to
+ * be tested against the viewport. A row counts as shown only when its whole box is inside it.
+ */
+function visibleRows() {
+  const total = rowEls.length;
+  const head = topEl.children.length;
+  if (hudEl.classList.contains('hidden')) return [head, total];
+  const box = $('hudwrap').getBoundingClientRect();
+  if (!box.height) return [head, total];
+  let n = head;
+  for (let i = head; i < total; i++) {
+    const r = rowEls[i].getBoundingClientRect();
+    if (r.top >= box.top - 1 && r.bottom <= box.bottom + 1) n++;
+  }
+  return [n, total];
+}
+
+/**
+ * Write the column onto the picture, the way the Python window's O key does.
+ *
+ * The plate is the phone's surface colour at 87 per cent, not a dark scrim, for the same reason the DOM
+ * column is: every text colour was picked against a light surface.
+ */
+function paintOnFrame(lines) {
+  const size = 11;
+  const lead = size + 3;
+  const pad = 6;
+  const rows = lines.filter((l) => l.text !== CHART_ROW && l.text !== '');
+  const shown = rows.slice(0, Math.floor((cv.height - 2 * pad) / lead));
+  const w = Math.min(cv.width - 2 * pad, 380);
+  ctx.save();
+  // Two flips cancel: this transform undoes the CSS mirror, so x/y below are screen coordinates and
+  // the letters read forwards. Without it the O-overlay column prints backwards.
+  ctx.translate(cv.width, 0);
+  ctx.scale(-1, 1);
+  ctx.fillStyle = 'rgba(255,251,254,0.87)';
+  ctx.fillRect(pad, pad, w, shown.length * lead + pad);
+  ctx.textBaseline = 'top';
+  shown.forEach((l, i) => {
+    ctx.font = `${l.bold ? 700 : 400} ${Math.min(l.size, size)}px "Segoe UI", Arial, sans-serif`;
+    ctx.fillStyle = `rgb(${l.colour[0]},${l.colour[1]},${l.colour[2]})`;
+    ctx.fillText(l.text, pad + 4, pad + 3 + i * lead);
+  });
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// What gets drawn on the picture
+// ---------------------------------------------------------------------------
+/** Landmark dots in the phone's own three colours and radii (MainActivity.kt:2019-2052). */
+function drawLandmarks(pts) {
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    const d = i >= IRIS_FIRST ? DOT.iris : (EYE_DRAW.has(i) ? DOT.eye : DOT.mesh);
+    ctx.beginPath();
+    ctx.fillStyle = `rgb(${d.colour[0]},${d.colour[1]},${d.colour[2]})`;
+    ctx.arc(p.x * cv.width, p.y * cv.height, d.r, 0, 6.2832);
+    ctx.fill();
+  }
+}
+
+/** The window FaceLandmarker was actually given, with its pixel size - the fact the other screen shows. */
+function drawFaceBox(pts) {
+  const box = faceRoi(pts, cv.width, cv.height);
+  if (!box) {
+    plate(8, cv.height - 30, 'không có vùng mặt: đầu bị cắt ra khỏi khung', [255, 205, 0], 12);
+    return;
+  }
+  ctx.strokeStyle = 'rgb(255,205,0)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0);
+  // The box is drawn in natural coordinates and then mirrored by CSS, so its left edge on screen is
+  // the right edge here: cv.width - box.x1 is where the label has to start to sit under the box.
+  plate(cv.width - box.x1, Math.min(box.y1 + 2, cv.height - 26),
+    `vùng mặt ${Math.round(box.x1 - box.x0)}×${Math.round(box.y1 - box.y0)} px`, [255, 205, 0], 12);
+}
+
+/**
+ * Put the detector's own output on the picture: every person box, the face window it was handed and
+ * the objects inside the frame - the same four facts the Python window's Y overlay prints (main.py:582).
+ *
+ * Two things worth keeping apart on screen, as they are there: a green box is a model thinking a shape
+ * is a person, and the yellow window is the crop FaceLandmarker actually measured. A person box with no
+ * window is a head the frame edge cut off, which is why the distance and eye numbers are missing for it.
+ */
+function drawYolo(persons, orphans, pts) {
+  const face = pts ? faceRoi(pts, cv.width, cv.height) : null;
+  let faceDrawn = false;
+  for (const p of persons) {
+    ctx.strokeStyle = `rgb(${YOLO_PERSON.join(',')})`;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(p.x0, p.y0, p.x1 - p.x0, p.y1 - p.y0);
+    plate(cv.width - p.x1, rowY(p.y0 - 24), `#${p.id}  conf ${p.conf.toFixed(2)}`, YOLO_PERSON, 13);
+    if (!face) {
+      plate(cv.width - p.x1 + 3, rowY(p.y1 + 2), 'không có vùng mặt: đầu bị cắt ra khỏi khung',
+        YOLO_FACE, 12);
+    } else if (overlaps(face, p)) {
+      drawFaceWindow(face);
+      faceDrawn = true;
+    }
+    // Two plates per head, the Python leg's limit: a third only covers the picture with ink.
+    for (const [name, cf] of topNearby(p)) {
+      plate(cv.width - p.x1 + 3, rowY(p.y0 + 26), `trong khung: ${vi(name)} ${cf.toFixed(2)}`,
+        YOLO_OBJECT, 12);
+    }
+  }
+  // The crop is a fact even when layer 1 missed the head, so an unassigned window still gets drawn.
+  if (face && !faceDrawn) drawFaceWindow(face);
+  for (const o of orphans) {
+    ctx.strokeStyle = `rgb(${YOLO_OBJECT.join(',')})`;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(o.x0, o.y0, o.x1 - o.x0, o.y1 - o.y0);
+    plate(cv.width - o.x1, rowY(o.y0 - 22), `${vi(o.name)} ${o.conf.toFixed(2)} · không thuộc ai`,
+      YOLO_OBJECT, 12);
+  }
+  plate(cv.width, cv.height - 24,
+    `xanh = hộp người (${persons.length}) · vàng = vùng mặt · cam = đồ vật (${orphans.length})`,
+    YOLO_TEXT, 12);
+}
+
+/** The yellow crop FaceLandmarker was given, with its pixel size - the plate drawFaceBox also prints. */
+function drawFaceWindow(face) {
+  ctx.strokeStyle = `rgb(${YOLO_FACE.join(',')})`;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(face.x0, face.y0, face.x1 - face.x0, face.y1 - face.y0);
+  plate(cv.width - face.x1, rowY(face.y1 + 2),
+    `vùng mặt ${Math.round(face.x1 - face.x0)}×${Math.round(face.y1 - face.y0)} px`, YOLO_FACE, 12);
+}
+
+const rowY = (y) => Math.max(0, Math.min(y, cv.height - 24));
+const overlaps = (a, b) => a.x1 > b.x0 && a.x0 < b.x1 && a.y1 > b.y0 && a.y0 < b.y1;
+
+/**
+ * Write a label on a dark plate, because the classroom wall behind it is a light colour.
+ *
+ * The picture is mirrored with a CSS transform, so the landmarks line up with the selfie view and the
+ * canvas keeps its natural coordinate system for readLight's region of interest. That flip also turns
+ * every glyph backwards and moves a label to the opposite side of the face it belongs to, so this
+ * function undoes the flip twice: the transform cancels the mirror and x/y below are the coordinates
+ * the operator sees. x is clamped because half a label says less than no label at all.
+ */
+function plate(x, y, text, colour, size) {
+  ctx.save();
+  ctx.translate(cv.width, 0);
+  ctx.scale(-1, 1);
+  ctx.font = `${size}px "Segoe UI", Arial, sans-serif`;
+  ctx.textBaseline = 'top';
+  const w = ctx.measureText(text).width;
+  const px = Math.max(0, Math.min(x, cv.width - w - 8));
+  ctx.fillStyle = 'rgba(12,12,14,0.92)';
+  ctx.fillRect(px, y, w + 8, size + 8);
+  ctx.fillStyle = `rgb(${colour[0]},${colour[1]},${colour[2]})`;
+  ctx.fillText(text, px + 4, y + 4);
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// Frames per second, on this machine's own clock
+// ---------------------------------------------------------------------------
+// Not part of the phone's screen: 30 FPS is the acceptance bar for this leg and the phone never has to
+// show it, so the figure lives below the camera rather than in the column. The column's own
+// "Thoi gian nhan dien" line is the number the phone really prints.
+const fpsStamps = [];
+setInterval(() => {
+  const now = performance.now();
+  while (fpsStamps.length && now - fpsStamps[0] > 1000) fpsStamps.shift();
+  const f = fpsStamps.length;
+  $('fps').textContent = running ? f + ' FPS' : '-- FPS';
+  $('fps').style.color = !running ? '#5f5f5f' : (f >= 30 ? 'rgb(46,125,50)' : 'rgb(239,108,0)');
+  $('verdict').textContent = running
+    ? (f >= 30 ? ' - Đạt chuẩn 30 FPS' : ' - dưới 30 FPS') : '';
+  // The second model's own cost, kept out of the column: the HUD's detection-time row is the
+  // landmark time the phone prints, and folding layer 1 into it would compare this leg's number with
+  // the phone's on two different definitions.
+  // The pass rate is counted from finished passes, not from the cadence setting: on a machine where one
+  // YOLO pass takes 1.2 s, "2 lần mỗi giây" would be a claim about the knob rather than the picture.
+  while (detStamps.length && now - detStamps[0] > 1000) detStamps.shift();
+  $('det').textContent = running && detector && showYolo
+    ? ' · lớp 1: ' + (detector.kind === 'yolo' ? 'YOLO11n 640 px' : 'EfficientDet-lite0 320 px')
+      + ', ' + detectCostMs.toFixed(1) + ' ms/lượt · '
+      // "0 lượt mỗi giây" reads as a broken counter on a machine whose single pass takes longer than a
+      // second, which is exactly when the number matters. Say what the clock found instead.
+      + (detStamps.length ? detStamps.length + ' lượt mỗi giây' : 'chưa hết 1 lượt trong 1 giây')
+      + ' · '
+      + (boxes ? boxes.persons.length : 0) + ' người, '
+      // Every object the detector kept, not just the ones no person owns. The orange boxes in the frame
+      // are the unassigned ones, and the legend says so; this number has to agree with the deduction
+      // printed under it, or "0 đồ vật, ngữ cảnh -25 SEI" reads as a broken counter.
+      + (boxes ? boxes.orphans.length + boxes.persons.reduce((n, p) => n + Object.keys(p.nearby || {}).length, 0) : 0) + ' đồ vật'
+      // Only when it is actually taking points: the deduction is the one thing on this strip that
+      // changes the number in the column, so it is printed next to the number it changes.
+      + (contextPenaltyNow > 0 ? ', ngữ cảnh -' + contextPenaltyNow + ' SEI' : '')
+    : '';
+  // The very-dark gain band, and the only measurement fact on this strip that this leg produces on its
+  // own. Blank unless a frame was actually lifted, so a well-lit room never shows a lever it did not use.
+  $('boost').textContent = running ? enhancer.boostText() : '';
+  // The claim the layout has to answer for: how much of the column is on screen right now.
+  const [vis, total] = visibleRows();
+  $('rows').textContent = ' · cột số liệu: ' + vis + '/' + total + ' dòng đang hiện'
+    + (vis < total ? ' (cuộn để xem hết)' : '');
+}, 500);
+
+async function makeLandmarker(files, delegate) {
+  // FaceLandmarker's own face cap. One is the phone's setting and the cheapest frame this machine has
+  // ever measured; two is what lets the operator put both children in the picture at once, and it costs
+  // a second mesh per extra head - so it is a control, not a default the page quietly changes.
+  const nf = Math.max(1, Math.min(4, parseInt($('nfaces').value, 10) || 1));
+  return FaceLandmarker.createFromOptions(files, {
+    baseOptions: { modelAssetPath: './face_landmarker.task', delegate },
+    runningMode: 'VIDEO',
+    numFaces: nf,
+    // The phone turns on blendshapes too: the fused openness is 65/35 geometry+blendshape when they
+    // agree and 80/20 when they do not. Without them this leg runs in geometry-only mode.
+    outputFaceBlendshapes: true,
+  });
+}
+
+async function makeDetector(files, delegate) {
+  // The two numbers the Python leg runs with: conf 0.35 from config.yaml:64, and a maxResults high
+  // enough that the cap is never what loses a student (Ultralytics keeps up to 300 boxes).
+  return ObjectDetector.createFromOptions(files, {
+    baseOptions: { modelAssetPath: './efficientdet_lite0.tflite', delegate },
+    runningMode: 'VIDEO',
+    scoreThreshold: DETECT_CONF,
+    maxResults: DETECT_MAX_RESULTS,
+  });
+}
+
+// The real YOLO11n - the same weights config.yaml:63 hands to Ultralytics - exported to ONNX and run in
+// the tab. It is loaded AFTER lite0 and the camera are already working, and never awaited by init(),
+// because the operator's own laptop measured 103 s to build a wasm session and 1.2-1.4 s per pass
+// (_dev/yolo-bench.html, 2026-11-04) while WebGPU's first pass never came back at all. A machine that
+// cannot answer a probe in time keeps lite0 and keeps a working page; loadYoloEngine() enforces that
+// and returns null, and ?yolo=0 skips the download entirely.
+let yoloEngine = null;
+
+async function loadYoloBackground() {
+  try {
+    await new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = './wasm-ort/ort.min.js';
+      s.onload = resolve;
+      s.onerror = () => reject(new Error('không tải được ort.min.js'));
+      document.head.appendChild(s);
+    });
+    // ?yoloproxy=0 is an escape hatch, not a fallback. One page can only build a session in one mode:
+    // after a worker session exists, a main-thread create fails on this ort build ("WebAssembly is not
+    // initialized yet"), so the page must not try the other mode on its own - see js/yolo.mjs.
+    const proxy = q.get('yoloproxy') !== '0';
+    if (!proxy) log('  YOLO11n sẽ chạy trên luồng chính theo ?yoloproxy=0: khung hình đứng trong mỗi lượt đo.');
+    const engine = await loadYoloEngine(window.ort, { log, proxy });
+    if (!engine) {
+      log('  Giữ EfficientDet-lite0: máy này không trả nổi một lượt YOLO 640 trong thời gian chờ.');
+      return;
+    }
+    yoloEngine = engine;
+    detector = engine;
+    // No reset: PersonIds matches on rectangles in frame pixels, and both engines hand back rectangles in
+    // that same space, so a student keeps the number they were already shown when the engine swaps under
+    // them. Only the source of the boxes changes.
+    log('  Lớp 1 đổi sang YOLO11n 640 px: cùng weights, cùng ngưỡng 0.35 với cửa sổ Python (phím Y tắt hộp).');
+  } catch (e) {
+    log('  YOLO trong trình duyệt không chạy: ' + String(e.message).slice(0, 90));
+  }
+}
+
+const stat = (m) => { $('statline').textContent = m; };
+
+async function init() {
+  $('start').disabled = true;
+  log('Tải bộ chạy wasm...');
+  const files = await FilesetResolver.forVisionTasks('./wasm');
+
+  let delegate = $('delegate').value;
+  log('Khởi tạo FaceLandmarker (bộ xử lý=' + delegate + ', tối đa ' + $('nfaces').value + ' mặt)...');
+  try {
+    landmarker = await makeLandmarker(files, delegate);
+  } catch (e) {
+    log('  ' + delegate + ' thất bại: ' + String(e.message).slice(0, 90));
+    if (delegate === 'CPU') throw e;
+    delegate = 'CPU';
+    $('delegate').value = 'CPU';
+    log('  thử lại với CPU...');
+    landmarker = await makeLandmarker(files, 'CPU');
+  }
+
+  // Layer 1 is optional in a way the measurement is not: if the model or the delegate fails, the
+  // numbers column still has to work, so the boxes simply do not appear and the log says why.
+  log('Khởi tạo bộ phát hiện người (lớp 1)...');
+  try {
+    detector = await makeDetector(files, delegate);
+  } catch (e) {
+    log('  ' + delegate + ' thất bại: ' + String(e.message).slice(0, 90));
+    try {
+      detector = await makeDetector(files, 'CPU');
+    } catch (e2) {
+      detector = null;
+      log('  Không có hộp phát hiện người: ' + String(e2.message).slice(0, 90));
+    }
+  }
+  if (detector) log('  Lớp 1 đang chạy: EfficientDet-lite0 4.6 MB (đầu vào 320 px).');
+
+  const w = parseInt($('res').value, 10);
+  // A machine with more than one camera must not be left to the browser's choice. The laptop webcam and
+  // a mounted Logitech are different instruments here, and the operator has to be able to say which one
+  // the numbers came from. The list only fills after a camera has been allowed once - that is how
+  // enumerateDevices works, and it is why the first line still says "mặc định".
+  const wanted = $('cam').value;
+  const size = { width: { ideal: w }, height: { ideal: Math.round(w * 0.75) } };
+  log('Mở webcam ' + w + 'x' + Math.round(w * 0.75)
+    + (wanted ? ' (camera đã chọn)...' : ' (camera mặc định)... (bấm Cho phép khi trình duyệt hỏi)'));
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: wanted ? Object.assign({ deviceId: { exact: wanted } }, size)
+        : Object.assign({ facingMode: 'user' }, size),
+      audio: false,
+    });
+  } catch (e) {
+    if (!wanted) throw e;
+    log('  Camera đã chọn không mở được (' + String(e.message).slice(0, 70) + ') → dùng camera mặc định.');
+    $('cam').value = '';
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: Object.assign({ facingMode: 'user' }, size), audio: false,
+    });
+  }
+  fillCameras();
+  // The picture the operator sees is this element, not a copy of it. It goes in FIRST so the overlay
+  // canvas stays on top of it; where the canvas is transparent the live video shows through, and where
+  // the enhancer has written pixels the canvas is opaque and covers it. A second camera session would
+  // otherwise leave the old stream running, so any video already in the box is removed first.
+  if (video && video.parentNode) video.parentNode.removeChild(video);
+  video = document.createElement('video');
+  video.className = 'camvid';
+  video.style.visibility = 'visible';
+  video.srcObject = stream; video.muted = true; video.playsInline = true;
+  $('cambox').insertBefore(video, $('cambox').firstChild);
+  await new Promise((resolve, reject) => {
+    const done = () => { clearTimeout(to); resolve(); };
+    const to = setTimeout(() => reject(new Error('Camera không mở được trong 12 giây')), 12000);
+    if (video.readyState >= 2) return done();
+    video.onloadeddata = done;
+    video.onerror = () => { clearTimeout(to); reject(new Error('thẻ video lỗi')); };
+  });
+  await video.play();
+  if (!video.videoWidth) throw new Error('Camera mở nhưng không có khung hình');
+  cv.width = probe.width = video.videoWidth;
+  cv.height = probe.height = video.videoHeight;
+  session.setFrameSize(cv.width, cv.height);
+  // No aspect-ratio is set on the box here: in the two-column layout the picture is contain-scaled into
+  // whatever the column has left, which keeps every overlay plate inside the visible area. A hard 4:3 or
+  // 16:9 on the box would fight the flex sizing and crop or stretch the frame instead.
+  log('Camera OK: ' + video.videoWidth + 'x' + video.videoHeight + ' → vòng đo bắt đầu');
+  stat('Đang đo. F: hộp mặt (' + (showBox ? 'bật' : 'tắt') + ') · Y: hộp phát hiện người ('
+    + (showYolo ? 'bật' : 'tắt') + ') · O: số liệu đè khung hình ('
+    + (numbersOnFrame ? 'bật' : 'tắt') + ') · G: tăng cường ảnh thiếu sáng ('
+    + (enhanceAuto ? 'tự động' : 'tắt') + ') · H: cột số liệu · P: vì sao hơi lag');
+  $('stop').disabled = false;
+  running = true;
+  personIds.reset();
+  loop();
+  if (detector && q.get('yolo') !== '0') loadYoloBackground();
+  else if (detector) log('  YOLO trong trình duyệt tắt theo ?yolo=0.');
+}
+
+/** One path from a detector's own output to the boxes the overlay draws - shared by both engines. */
+function setBoxes(raw, t) {
+  const parsed = readBoxes(raw);
+  const withIds = personIds.assign(parsed.persons, t);
+  boxes = { persons: withIds, orphans: assignObjects(withIds, parsed.objects) };
+}
+
+/**
+ * The context objects that belong to the student whose face is being measured, or null.
+ *
+ * The Python leg pairs a face with a person by cropping the face out of that person's box
+ * (classroom.py:288), so the pairing is structural there. Here the face mesh runs over the whole
+ * frame and layer 1 runs on its own clock, so the pairing is done on this line: the nose tip of the
+ * measured face, in the tightest person box that contains it - the same containment rule
+ * assignObjects uses for objects, not a second one invented for the score.
+ *
+ * null is the honest answer as often as it is a gap: with ?yolo=0, before the first YOLO pass
+ * answers, and while the operator holds the boxes off with Y, nothing in the room has been detected,
+ * which is exactly what the phone reports for every student it measures.
+ */
+function contextNearby(pts) {
+  if (!boxes || !pts) return null;
+  const nose = pts[1];
+  if (!nose) return null;
+  const owner = ownerOf(boxes.persons, nose.x * cv.width, nose.y * cv.height);
+  return owner ? owner.nearby : null;
+}
+
+/**
+ * The gates the column quotes. Read live off the session because they are the session's own numbers:
+ * before a profile is ready they are the base constants, and after it they are the blended ones.
+ * habitDetail needs the five the phone prints; gazeStatus needs the two gaze gates.
+ */
+function hudThr() {
+  return {
+    gazeH: session.thrGazeH, gazeV: session.thrGazeV,
+    lookYaw: session.thrLookYaw, lookPitch: session.thrLookPitch, perclos: session.thrPerclos,
+  };
+}
+
+/**
+ * The phone's "Xử lý ảnh" row (MainActivity.kt:1336, fed by enhancer.describe() at 5426). Dash before
+ * the first frame is read, exactly as the phone holds "--" at 781 - and never a smoothed-over answer:
+ * when the stage pauses itself to protect the frame rate, the row says "CLAHE tạm tắt để giữ FPS".
+ */
+function imgProcText() {
+  if (!lastLight) return null;
+  return enhancer.describe(lastLight.backlit, lastLight.overexposed);
+}
+
+function loop() {
+  if (!running) return;
+  const t = performance.now();
+
+  // The light is read through the probe canvas, and only every LIGHT_READ_MS while the enhancer is idle.
+  // Once the stage is working the pixels the model has to read are not the pixels the camera delivered,
+  // so those frames do go through the copy - the same reason the phone lifts a Y plane
+  // (MainActivity.kt:5415), and the region it lifts is the one the PREVIOUS detection reported
+  // (boxFresh in ImageEnhancer.process), so lastPts here is parity, not a shortcut.
+  const wantProbe = enhancer.active || t - probeAtMs >= LIGHT_READ_MS;
+  let img = null;
+  let light = lastLight;
+  const tFrame = performance.now();
+  if (wantProbe) {
+    pctx.drawImage(video, 0, 0, cv.width, cv.height);
+    perfAdd('copy', performance.now() - tFrame);
+    try {
+      const tGrab = performance.now();
+      img = pctx.getImageData(0, 0, cv.width, cv.height);
+      perfAdd('grab', performance.now() - tGrab);
+      light = readLight(img.data, cv.width, cv.height, lastPts);
+      lastLight = light;
+      probeAtMs = t;
+    } catch (e) { log('Đọc ánh sáng thất bại: ' + e.message); }
+  }
+  perfAdd('light', performance.now() - tFrame);
+
+  // Enhancement runs on the raw reading it just reported, and only then does the frame go to the
+  // models. lumaMean stays the room's own brightness, never the brightness this stage produced.
+  let enhanced = false;
+  if (img && light) {
+    const tEnh = performance.now();
+    const box = lastPts ? faceRoi(lastPts, cv.width, cv.height) : null;
+    const r = enhancer.process(img.data, cv.width, cv.height, box, light, t, enhanceAuto);
+    if (r.changed) { ctx.putImageData(img, 0, 0); enhanced = true; }
+    perfAdd('enh', performance.now() - tEnh);
+  }
+  // In normal light the canvas holds nothing but overlays and must be emptied, or the last lifted frame
+  // would stay painted over the live video.
+  if (!enhanced) ctx.clearRect(0, 0, cv.width, cv.height);
+  // With nothing changed the video element is still the cheaper source, so the normal-light path
+  // hands the model the stream itself and gains no pixel copy at all.
+  const source = enhanced ? cv : video;
+
+  let res = null;
+  const tLand = performance.now();
+  try { res = landmarker.detectForVideo(source, t); }
+  catch (e) { log('detect thất bại: ' + e.message); }
+  const cost = performance.now() - tLand;
+  perfAdd('land', cost);
+  lastFaces = res && res.faceLandmarks && res.faceLandmarks.length ? res.faceLandmarks : null;
+
+  // Layer 1 on its own clock, the way config.yaml's detect_fps: 8 paces it on the Python leg. It is a
+  // second model on the same pixels, and running it every frame is what would break the 30 FPS floor.
+  // cost stays the landmark time alone, because that is the figure the phone's own
+  // detection-time row prints.
+  if (detector && showYolo && !detectBusy && t - detectAtMs >= detectEveryMs) {
+    detectAtMs = t;
+    const t1 = performance.now();
+    let raw = null;
+    // Layer 1 keeps the untouched frame. The phone has no person detector at all, so the enhancer
+    // there only ever exists to help the landmark model - and the boxes are a second opinion on the
+    // room, not a measurement of the eyes.
+    try { raw = detector.detectForVideo(video, t); }
+    catch (e) { log('bộ phát hiện người thất bại: ' + e.message); }
+    if (raw && typeof raw.then === 'function') {
+      // The YOLO leg: the answer arrives after this frame is already drawn, so the boxes on screen can
+      // lag the picture by one pass. detectCostMs is timed to the answer, not to the call - the number
+      // the footer prints is what the machine really took.
+      detectBusy = true;
+      raw.then((r) => {
+        detectCostMs = performance.now() - t1;
+        detStamps.push(performance.now());
+        setBoxes(r, t);
+      }, (e) => { log('bộ phát hiện người thất bại: ' + String(e.message).slice(0, 90)); })
+        .finally(() => {
+          detectBusy = false;
+          // The next pass is scheduled from the END of this one, not from its start. A pass that takes
+          // 1332 ms against a 500 ms cadence is overdue the moment it lands, so scheduling from the
+          // start re-armed it on the very next frame and YOLO ate every idle millisecond the tab had -
+          // which is the stutter this line removes. The gap now is real UI time between passes.
+          detectAtMs = performance.now();
+        });
+    } else {
+      detectCostMs = performance.now() - t1;
+      detStamps.push(performance.now());
+      setBoxes(raw, t);
+    }
+  }
+
+  fpsStamps.push(t);
+  while (fpsStamps.length && t - fpsStamps[0] > 1000) fpsStamps.shift();
+
+  // Identity runs before anything is measured, so a frame that changes hands is scored against the
+  // profile of the child who is actually on screen in it - not the one who was chosen last session.
+  // It also picks WHICH head the column measures when several are on screen, which is why lastPts is
+  // written after this call and not at the detector.
+  idTick(lastFaces, t);
+  const pts = lastPts = lastFaces ? (lastFaces[measureIdx] || lastFaces[0]) : null;
+  // The other heads are judged before anything is drawn, so a box over a second child is the same age as
+  // the numbers column rather than one frame behind it. With one head in shot every peer session is
+  // paused instead: a child who stepped out must not have their number dragged down by the gap.
+  if (lastFaces && lastFaces.length > 1 && faceRows) {
+    const tPeer = performance.now();
+    peerTick(lastFaces, res.faceBlendshapes, t, light);
+    perfAdd('proc', performance.now() - tPeer);
+  } else {
+    peerAlerts = null;
+    for (const [id, peer] of peerSessions) {
+      peer.s.pause(t);
+      if (t - peer.at > 60000) peerSessions.delete(id);
+    }
+  }
+  const tDraw = performance.now();
+  let lines = [];
+
+  // Boxes first, so the phone's dots stay readable on top of them and the numbers the operator is
+  // measuring still come from the dots rather than from a plate covering an eye.
+  if (showYolo && boxes) drawYolo(boxes.persons, boxes.orphans, pts);
+  // The identity answer goes where the operator looks while a child sits down: on the picture, not in
+  // the column, and never on the same line as the "no face in frame" warning, which only paints when
+  // pts is null and this one only when pts is not.
+  if (idStatus) plate(4, 4, idStatus.text, idStatus.colour, 12);
+  // One name plate per head, only in the frames that hold more than one. The dots and the column
+  // still describe the single measured child; these labels are what lets the operator see that the
+  // camera put "HS 1" and "HS 2" on the right heads.
+  if (faceLabels && lastFaces) {
+    for (const lab of faceLabels) {
+      const at = facePlateAt(lastFaces[lab.i]);
+      plate(at.x, at.y, lab.text, lab.colour, 13);
+    }
+  }
+  // The warning belonging to each of the other children, one line under that child's name plate. It is
+  // under the name and not beside it because a plate is clamped to the picture's width, and two plates
+  // side by side would push one of them off the frame the operator is looking at.
+  if (peerAlerts && lastFaces) {
+    for (const a of peerAlerts) {
+      const at = facePlateAt(lastFaces[a.i]);
+      plate(at.x, rowY(at.y + 24), a.text, a.colour, 12);
+    }
+  }
+
+  if (pts) {
+    const tProc = performance.now();
+    // faceBlendshapes is indexed by face, and once a second head is in shot the measured one is not
+    // necessarily index 0 - so the blendshapes handed to the pipeline are the ones belonging to the
+    // head being scored, not whichever head the detector happened to list first.
+    const pipe = measureIdx === 0 ? res
+      : { faceBlendshapes: [(res.faceBlendshapes || [])[measureIdx]] };
+    const r = session.process(pts, pipe, t, light, contextNearby(pts));
+    // Edge-triggered, because a term that moves the score has to say so when it starts and when it
+    // stops - and a line printed every frame would bury the rest of the log.
+    if (r.contextPenalty > 0 && contextPenaltyNow === 0) {
+      log('Ngữ cảnh lớp 1: điện thoại trong khung lúc đầu đang cúi, SEI bị trừ ' + r.contextPenalty
+        + ' (đúng như cửa sổ Python).');
+    } else if (r.contextPenalty === 0 && contextPenaltyNow > 0) {
+      log('Ngữ cảnh lớp 1 thôi trừ: hết thấy điện thoại hoặc đầu đã nâng lên.');
+    }
+    contextPenaltyNow = r.contextPenalty;
+    // The phone's 30-second autosave (MainActivity.kt:2759-2762): the run in progress is written into the
+    // profile WITHOUT being closed, so a tab that dies mid-sitting keeps what it had learned. commit()
+    // keys the record by session id, which is what makes repeating this safe.
+    if (t - habitSaveAtMs >= HABIT_AUTOSAVE_MS) {
+      habitSaveAtMs = t;
+      commitHabit(false);
+    }
+    if (r.calibrated && r.sei !== null && r.sei !== undefined && t - seiSampleAtMs >= SEI_SAMPLE_MS) {
+      seiSampleAtMs = t;
+      seiHistory.push(r.sei);
+      if (seiHistory.length > SEI_HISTORY_MAX) seiHistory.shift();
+    }
+    lines = hudLines(toHud(r), lastFaces ? lastFaces.length : 1, cost, fpsStamps.length,
+      hudThr(), imgProcText());
+    perfAdd('proc', performance.now() - tProc);
+
+    // Dots always, exactly as the phone's Canvas does; the crop box is this leg's addition.
+    drawLandmarks(pts);
+    if (showBox) drawFaceBox(pts);
+  } else {
+    // No face is missing data, not inattention: neither window may average the gap.
+    const tProc = performance.now();
+    session.pause(t);
+    lines = hudLines(null, 0, cost, fpsStamps.length, hudThr(), imgProcText());
+    perfAdd('proc', performance.now() - tProc);
+    if (showBox) plate(4, 4, 'không thấy mặt trong khung hình', C.RED, 12);
+  }
+  perfAdd('draw', performance.now() - tDraw);
+
+  lastLines = lines;
+  const tPaint = performance.now();
+  if (numbersOnFrame) paintOnFrame(lines);
+  if (!$('hud').classList.contains('hidden')) paintRows(lines);
+  perfAdd('paint', performance.now() - tPaint);
+  raf = requestAnimationFrame(loop);
+}
+
+function stop() {
+  running = false;
+  cancelAnimationFrame(raf);
+  // The phone ends the habit session on leaving the screen (MainActivity.kt:5474-5490) - a sitting that
+  // is only saved when the accumulator is still open loses its last frames. Commit before reset(), which
+  // drops the accumulator.
+  commitHabit(true);
+  session.reset();
+  // The enhancer belongs to a running camera: drop its pause and the face box it was lifting, and the
+  // column's image row goes back to the phone's "--" (MainActivity.kt:5808).
+  enhancer.reset();
+  lastPts = null;
+  lastFaces = null;
+  faceLabels = null;
+  faceRows = null;
+  peerAlerts = null;
+  // Pressing Dừng ends every sitting in the frame, not just the one the dropdown held: a bystander's run
+  // is committed under their own name first, then the sessions go. With "Ghi cùng lúc" off they never
+  // wrote anything, so there is nothing to commit and only the caption sessions are dropped.
+  for (const [id, peer] of peerSessions) {
+    if (recPeersOn) commitPeer(peer, true, performance.now());
+    peerSessions.delete(id);
+  }
+  measureIdx = 0;
+  lastLight = null;
+  seiHistory.length = 0;
+  seiSampleAtMs = 0;
+  if (video && video.srcObject) video.srcObject.getTracks().forEach((s) => s.stop());
+  // A stopped stream keeps showing its last frame, and a still picture of a face inside a live-looking
+  // box is exactly the thing this app promises not to do. The column keeps its final numbers and says so;
+  // the picture goes dark with them.
+  if (video) video.style.visibility = 'hidden';
+  if (landmarker) { landmarker.close(); landmarker = null; }
+  if (detector) { detector.close(); detector = null; }
+  // If YOLO had taken over, detector IS the YOLO engine and was just released; if lite0 is still the
+  // active one, this is the only place its session gets released. Either way a reload must not reuse a
+  // released session.
+  if (yoloEngine && yoloEngine !== detector) yoloEngine.close();
+  yoloEngine = null;
+  boxes = null;
+  detectAtMs = 0;
+  detectCostMs = 0;
+  detectBusy = false;
+  detStamps.length = 0;
+  personIds.reset();
+  // The seat bookkeeping belongs to a live camera: a stale "the chair was empty" would arm a switch the
+  // moment the next sitting started.
+  learningId = null;
+  idStatus = null;
+  absentSinceMs = 0;
+  lastGapMs = 0;
+  seatArmed = true;
+  faceM.resetVotes();
+  $('start').disabled = false; $('stop').disabled = true;
+  stat('Đã dừng. Cột số liệu giữ nguyên khung hình cuối cùng.');
+  log('Đã dừng.');
+}
+
+$('start').onclick = () => init().catch((e) => { log('Lỗi: ' + e.message); $('start').disabled = false; });
+$('stop').onclick = stop;
+$('reload').onclick = () => { stop(); setTimeout(() => init().catch((e) => log('Lỗi: ' + e.message)), 400); };
+
+// The knob that trades boxes for frame rate. It changes only the cadence: the number-grace window is
+// the Python leg's fixed 15000 ms, not something measured in passes.
+$('rate').onchange = () => {
+  detectEveryMs = DETECT_RATES[$('rate').value] || DETECT_RATES[2];
+  log('Hộp người: ' + $('rate').value + ' lần mỗi giây (' + detectEveryMs
+    + ' ms một lần). Trên máy này 8 lần mỗi giây sẽ kéo FPS xuống dưới 30 - đồng hồ FPS bên dưới nói lên điều đó.');
+};
+
+// The phone's own cycle: one tap moves to the next level and the button label is the state (it is a
+// cycling Button, not a dropdown - MainActivity.kt:1236-1245).
+$('sensbtn').onclick = () => {
+  sensLevel = (sensLevel + 1) % SENS_NAMES.length;
+  session.setSensitivity(sensLevel);
+  $('sensbtn').textContent = 'Độ nhạy: ' + SENS_NAMES[sensLevel];
+  log('Độ nhạy = ' + sensLevel + ' (' + SENS_NAMES[sensLevel]
+    + ', áp dụng từ khung tiếp theo, giống điện thoại).');
+};
+
+// What the phone's button does: drop the baseline, the history and the score, and calibrate again from
+// the next frame (MainActivity.kt:1898-1908). The phone also closes and commits the habit session here
+// (MainActivity.kt:3524), because re-calibrating means the sitting being measured is over.
+$('recal').onclick = () => {
+  commitHabit(true);
+  session.reset();
+  // The bystanders are re-calibrating too, so their runs close here for the same reason the phone closes
+  // the measured one (MainActivity.kt:3524): a session that re-baselines mid-sitting would otherwise
+  // keep counting minutes against an accumulator that no longer describes the frames coming in.
+  for (const [id, peer] of peerSessions) {
+    if (recPeersOn) commitPeer(peer, true, performance.now());
+    peerSessions.delete(id);
+  }
+  // The enhancer belongs to a running camera: drop its pause and the face box it was lifting, and the
+  // column's image row goes back to the phone's "--" (MainActivity.kt:5808).
+  enhancer.reset();
+  lastPts = null;
+  lastLight = null;
+  seiHistory.length = 0;
+  seiSampleAtMs = 0;
+  log('Hiệu chuẩn lại: đang nạp lại đường cơ sở.');
+};
+
+// The phone's roster buttons (MainActivity.kt:1181-1188), on this leg's storage.
+$('student').onchange = () => bindStudent($('student').value, 'Đổi học sinh');
+$('addstu').onclick = () => {
+  const name = window.prompt('Tên học sinh mới (tối đa 24 ký tự):', '');
+  if (name === null) return;
+  const st = addStudent(name);
+  bindStudent(st.id, 'Thêm học sinh');
+  log('  Em này chưa có mặt đã học: mở camera rồi bấm "Học mặt HS này" và giữ yên 4 giây.');
+};
+// Enrolment is deliberately a press-and-hold on the live picture rather than a photo upload: the
+// signature is only worth what the camera it came from is worth, and this booth has one camera.
+$('learnface').onclick = () => {
+  if (!running) {
+    log('Chưa mở camera, nên không có khuôn mặt để học. Bấm "Mở camera" trước.');
+    return;
+  }
+  if (!lastPts) {
+    log('Không thấy mặt trong khung hình: đưa em đó vào giữa khung rồi bấm lại.');
+    return;
+  }
+  // Enrolment is the one place a second head cannot be tolerated: nothing here says which of two faces
+  // belongs to the name being learned, and a bank built from the wrong child is worse than no bank.
+  if (lastFaces && lastFaces.length > 1) {
+    log('Có ' + lastFaces.length + ' người trong khung hình. Học mặt chỉ chạy khi "'
+      + bound.name + '" ở một mình - máy không có cách nào biết mặt nào là em đó.');
+    return;
+  }
+  learningId = bound.id;
+  learnUntilMs = performance.now() + IDENTITY.LEARN_HOLD_MS;
+  learnNextMs = 0;
+  learnGot = 0;
+  learnSkipped = 0;
+  learnSkipNote = '';
+  faceM.resetVotes();
+  log('Học mặt cho "' + bound.name + '": giữ yên 4 giây, mặt hướng vào ống kính - đầu hơi lệch vẫn được'
+    + ' học, lệch quá nhiều hoặc đầu chạm biên thì máy bỏ khung đó và nói rõ vì sao.');
+};
+// numFaces is a FaceLandmarker option, so it is read when the model gets built: changing it here changes
+// the NEXT "Mở camera", not the running one. Saying so beats an operator waiting for the third head.
+$('nfaces').onchange = () => {
+  log('Số mặt = ' + $('nfaces').value + ' - có hiệu lực từ lần mở camera kế tiếp (bấm "Mở camera").'
+    + ' Mỗi mặt thêm là một lần lưới điểm phải tính trong cùng khung hình.');
+};
+// Off is for the sitting that is already being scored: the operator stops the machine from choosing
+// names, and the dropdown takes over alone.
+$('autoid').onchange = () => {
+  autoIdOn = $('autoid').value !== 'off';
+  faceM.resetVotes();
+  log('Tự nhận diện: ' + (autoIdOn
+    ? 'bật - chỉ đổi hồ sơ sau khi ghế trống ' + (IDENTITY.VACANCY_MS / 1000) + ' s và '
+      + IDENTITY.NEED + ' khung cùng một đáp án.'
+    : 'tắt - hồ sơ chỉ đổi khi bạn chọn trong ô "Học sinh".'));
+};
+
+// Recording the bystanders is this leg's own feature, so it owns its own sentence: what it promises is
+// that the run written belongs to the name the face bank produced, which is a guess made from a learned
+// face and not a choice the operator made. A teacher who does not want guesses in the records turns it
+// off, and the boxes stay as captions only.
+$('recpeers').onchange = () => {
+  const on = $('recpeers').value !== 'off';
+  if (!on && recPeersOn) {
+    // Switching off mid-sitting commits what the bystanders already sat, under the names they were
+    // measured for. Throwing those frames away instead would silently shorten runs the child earned.
+    for (const [id, peer] of peerSessions) {
+      commitPeer(peer, true, performance.now());
+      peerSessions.delete(id);
+    }
+  }
+  recPeersOn = on;
+  log('Ghi cùng lúc: ' + (on
+    ? 'bật - mỗi em máy nhận ra trong khung hình có một phiên đang lưu vào hồ sơ của chính em đó, '
+      + 'không cần chọn em trong ô "Học sinh". Em chưa học mặt thì không có số và không có phiên.'
+    : 'tắt - các em bên cạnh chỉ có tên và ô cảnh báo; chỉ em đang được gắn hồ sơ mới được ghi điểm.'));
+};
+// This is the only way to empty a profile without opening the browser's site-data settings, and it is
+// destructive, so it asks. The phone has no such button: its storage is the app's own and switching
+// students leaves the old profile on disk.
+$('forgetstu').onclick = () => {
+  if (!bound) return;
+  const n = bound.sessionCount();
+  const nf = faceM.count(bound.id);
+  if (!window.confirm('Xóa toàn bộ ' + n + ' phiên đã học' + (nf ? ' và ' + nf + ' khung mặt' : '')
+    + ' của "' + bound.name + '" khỏi trình duyệt này? Không phục hồi được. Hồ sơ trên điện thoại không bị ảnh hưởng.')) return;
+  const id = bound.id;
+  session.discardHabitSession();
+  clearProfile(id);
+  clearFace(id);
+  faceM.drop(id);
+  bound = loadProfile(id);
+  session.setProfile(bound);
+  persistProfile(bound);
+  log('Đã xóa ' + n + ' phiên' + (nf ? ' và ' + nf + ' khung mặt' : '') + ' của "' + bound.name
+    + '" trong trình duyệt này. '
+    + (nf ? 'Máy sẽ không còn tự nhận ra em này cho tới khi học mặt lại. ' : '')
+    + 'Máy quay vẫn đang đo, nhưng học lại từ đầu.');
+};
+
+// Closing the tab must not throw away the sitting: the phone commits on onStop for exactly this reason.
+addEventListener('pagehide', () => commitHabit(true));
+
+// This leg's own control, in the same cycling-Button idiom as the phone's sensitivity button. It moves
+// only the size of the rows: the column's content, order and colours are hud.mjs's and do not change.
+$('fitbtn').onclick = () => {
+  fitLock = true;   // once the operator chooses, the window stops choosing for them
+  const before = visibleRows();
+  setTextStep((textStep + 1) % TEXT_STEPS.length);
+  paintRows(lastLines);
+  const [vis, total] = visibleRows();
+  log('Cỡ số liệu = ' + TEXT_STEPS[textStep].name + ' (x' + textScale + '): '
+    + (vis > before[0] ? 'thêm ' + (vis - before[0]) + ' dòng so với cỡ trước, ' : '')
+    + vis + '/' + total + ' dòng nằm trong khung, phần còn lại cuộn để xem.');
+};
+
+// Picture left, numbers right, both the full height of the window - or the phone's stacked column again
+// in a narrow window. ?split=1 forces the two-column arrangement at any width, because the booth's
+// laptop may be projected into a smaller window than the operator wants and the split is the whole point
+// of this screen.
+const WIDE_QUERY = '(min-width:880px)';
+function applyWide() {
+  document.body.classList.toggle('wide', q.get('split') === '1' || matchMedia(WIDE_QUERY).matches);
+}
+
+// A resized window changes both the arrangement and how much of the column fits, so the size follows
+// the window rather than a guess baked into the file. It stops touching the scale once the operator has
+// picked one by hand.
+addEventListener('resize', () => { applyWide(); autoFit(); });
+
+addEventListener('keydown', (ev) => {
+  if (ev.target && /^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(ev.target.tagName)) return;
+  const k = ev.key.toLowerCase();
+  if (k === 'f') { showBox = !showBox; log('Hộp mặt: ' + (showBox ? 'bật' : 'tắt')); }
+  else if (k === 'y') {
+    showYolo = !showYolo;
+    // Off also stops the second model, which is the point of the key: the phone's screen has no boxes
+    // and no detector, so this is the one press that makes this leg's picture the phone's picture.
+    if (!showYolo) { boxes = null; }
+    log('Hộp phát hiện người: ' + (showYolo ? 'bật' : 'tắt')
+      + (showYolo ? '' : ' (dừng bộ phát hiện lớp 1, khung hình trở lại như điện thoại, và điểm ngữ cảnh thôi trừ)'));
+  }
+  else if (k === 'o') { numbersOnFrame = !numbersOnFrame; log('Số liệu đè khung hình: ' + (numbersOnFrame ? 'bật' : 'tắt')); }
+  else if (k === 'g') {
+    // The phone's own auto/manual switch for this stage (ImageEnhancer.process's `auto`).
+    enhanceAuto = !enhanceAuto;
+    enhancer.reset();
+    log('Tăng cường ảnh thiếu sáng: ' + (enhanceAuto ? 'tự động' : 'tắt') + ' · G để đổi lại');
+  }
+  else if (k === 'p') {
+    // The answer to "hơi lag": which stage costs what, measured on the machine standing in front of the
+    // screen right now. The YOLO thread is printed too, because 'wasm+worker' and 'wasm' feel completely
+    // different even when the per-pass millisecond figure is the same.
+    // "đọc ánh sáng" is the amortised cost of one frame; "chép hình" and "đọc điểm ảnh" are the cost of
+    // one READING, and readings only happen every LIGHT_READ_MS while the enhancer is idle. Measured on
+    // the C270 through real Chrome, 2026-11-05: a 640x480 copy alone is 7.1 ms and its readback 2.4 ms,
+    // and inside a running session the same pair cost 13 and 3.4 ms - which is why they are separate.
+    log('Nặng nhất mỗi khung hình: landmarker ' + perfMs(perf.land) + ' · đọc ánh sáng ' + perfMs(perf.light)
+      + ' (mỗi lượt đọc: chép hình ' + perfMs(perf.copy) + ' + đọc điểm ảnh ' + perfMs(perf.grab) + ')'
+      + ' · tăng cường ' + perfMs(perf.enh)
+      + ' · đo ' + perfMs(perf.proc) + ' · vẽ ' + perfMs(perf.draw) + ' · chữ ' + perfMs(perf.paint)
+      + ' ms · khung hình ' + fpsStamps.length + '/s'
+      + (yoloEngine ? ' · YOLO11n ' + perfMs(yoloEngine.lastMs) + ' ms/lượt, luồng ' + yoloEngine.thread
+        : ' · lớp 1: ' + (detector ? 'lite0' : 'tắt'))
+      + ' · lượt lớp 1 ' + detStamps.length + '/s'
+      + ' · ' + (imgProcText() || 'chưa đọc ánh sáng'));
+  }
+  else if (k === 'h') { hudEl.classList.toggle('hidden'); }
+  else return;
+  ev.preventDefault();
+  stat('F: hộp mặt (' + (showBox ? 'bật' : 'tắt') + ') · Y: hộp phát hiện người ('
+    + (showYolo ? 'bật' : 'tắt') + ') · O: số liệu đè lên khung hình ('
+    + (numbersOnFrame ? 'bật' : 'tắt') + ') · G: tăng cường ảnh thiếu sáng ('
+    + (enhanceAuto ? 'tự động' : 'tắt') + ') · H: cột số liệu ('
+    + (hudEl.classList.contains('hidden') ? 'ẩn' : 'hiện') + ') · P: vì sao hơi lag');
+});
+
+// The column exists before the camera does: an empty white box reads as a broken app, and the phone's
+// answer for "not measured yet" is the dash - so this is its no-face column, not invented numbers.
+lastLines = hudLines(null, 0, null, null, hudThr());
+paintRows(lastLines);
+
+const q = new URLSearchParams(location.search);
+if (q.get('delegate')) $('delegate').value = q.get('delegate');
+if (q.get('res')) $('res').value = q.get('res');
+if (q.get('faces')) $('nfaces').value = q.get('faces');
+if (q.get('sens')) {
+  sensLevel = Math.min(3, Math.max(0, parseInt(q.get('sens'), 10) || 0));
+  session.setSensitivity(sensLevel);
+  $('sensbtn').textContent = 'Độ nhạy: ' + SENS_NAMES[sensLevel];
+}
+// The booth may want the phone's picture rather than the detector's: one URL parameter turns layer 1
+// off from the first frame instead of leaving it for a key press nobody has told the operator about.
+if (q.get('yolo') === '0') showYolo = false;
+if (q.get('rate') && DETECT_RATES[q.get('rate')]) {
+  $('rate').value = q.get('rate');
+  detectEveryMs = DETECT_RATES[q.get('rate')];
+}
+// Same idea for the column: ?fit=phone keeps the phone's own type scale at any window height, so a
+// screen comparison can be made without anyone hunting for the button first. It also locks the scale,
+// because a parameter that says "the phone's size" is not satisfied by the page picking another one two
+// seconds later.
+if (q.get('fit') === 'phone') {
+  fitLock = true;
+  setTextStep(0);
+  paintRows(lastLines);
+}
+// After the parameter, so an unlocked page gets the size this window can actually carry. applyWide comes
+// first because the column's width is what both the sparkline and the fit measurement are taken against.
+applyWide();
+paintRows(lastLines);
+autoFit();
+if (q.get('auto') === '1') {
+  log('Tự động khởi động (?auto=1)');
+  setTimeout(() => init().catch((e) => log('Lỗi: ' + e.message)), 300);
+}
+</script>
+</body>
+</html>
