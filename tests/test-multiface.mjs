@@ -69,7 +69,7 @@ function makePage(three) {
   const C = { GRAY: [136, 136, 136], HINT_AMBER: [255, 160, 0], PRIMARY: [102, 80, 164],
     SEI_GOOD: [46, 125, 50], ALERT_ORANGE: [239, 108, 0] };
   const rowY = (y) => Math.max(0, Math.min(y, cv.height - 24));
-  const seen = { plates: [], binds: [], logs: [], sessions: [], saved: [], uncal: false };
+  const seen = { plates: [], binds: [], logs: [], stats: [], sessions: [], saved: [], uncal: false };
   const faceM = new FaceMatcher();
   for (let i = 0; i < 6; i++) faceM.addSample('hs1', faceSignature(mesh(A)));
   for (let i = 0; i < 6; i++) faceM.addSample('hs2', faceSignature(mesh(B)));
@@ -133,7 +133,11 @@ function makePage(three) {
   const alertSentence = (code) => (code ? '[cảnh báo ' + code + ']' : '');
   const contextNearby = () => null;
 
-  const body = new Function('cv', 'C', 'rowY', 'plate', 'log', 'ownerOf', 'nameOf', 'currentId',
+  // `stat` and `$` are the page's own line-under-the-camera and element lookup. The enrolment result
+  // now speaks there as well as in the log, so running the shipped learnTick needs both handed in -
+  // stubbing them is what keeps this a test of the real source instead of a paraphrase of it.
+  const body = new Function('cv', 'C', 'rowY', 'plate', 'log', 'stat', 'students', '$', 'ownerOf',
+    'nameOf', 'currentId',
     'bindStudent', 'faceM', 'assignFaces', 'faceSignature', 'faceGate', 'IDENTITY', 'saveFace', 'seen',
     'MonitorSession', 'loadProfile', 'toHud', 'alertSentence', 'contextNearby', 'sensLevel',
     'persistProfile', 'HABIT_AUTOSAVE_MS', 'PEER_GONE_MS',
@@ -141,6 +145,7 @@ function makePage(three) {
          lastSwitchMs = 0, learningId = null, idAtMs = 0, autoIdOn = true, recPeersOn = true,
          measureIdx = 0, boxes = null, faceRows = null, peerAlerts = null, peerSessions = new Map(),
          learnUntilMs = 0, learnNextMs = 0, learnGot = 0, learnSkipped = 0, learnSkipNote = '',
+         builtNumFaces = 0,
          bound = { id: 'hs1', name: 'HS 1' };
      ${src}
      return { idTick, multiTick, peerTick, commitPeer, pickMeasure, facePlateAt, learnTick, seen, faceM,
@@ -155,6 +160,10 @@ function makePage(three) {
        setAuto: (v) => { autoIdOn = v; },
        setRecPeers: (v) => { recPeersOn = v; },
        setLearning: (v) => { learningId = v; },
+       // The face cap makeLandmarker wrote when the model was created, and the dropdown's current value.
+       // Both decide the hint in the enrolment result line, so a test has to be able to set them apart.
+       setBuiltFaces: (n) => { builtNumFaces = n; },
+       setNfaces: (v) => { seen.nfaces = String(v); },
        setMeasureIdx: (v) => { measureIdx = v; },
        // loadProfile memoises, so this is the same object the page wrote, not a fresh read.
        profile: (id) => loadProfile(id),
@@ -165,6 +174,9 @@ function makePage(three) {
   return body(cv, C, rowY,
     (x, y, text, colour) => seen.plates.push({ x, y, text, colour }),
     (m) => seen.logs.push(m),
+    (m) => seen.stats.push(m),
+    () => (three ? ['hs1', 'hs2', 'hs3'] : ['hs1', 'hs2']).map((id) => ({ id, name: NAMES[id] })),
+    () => ({ value: seen.nfaces || '1' }),
     // The person boxes this page pairs a face with: one box per head, wide enough to contain the nose.
     (persons, x, y) => (persons || []).find((p) => x >= p.x0 * cv.width && x <= p.x1 * cv.width) || null,
     (id) => NAMES[id] || id,
@@ -597,6 +609,31 @@ function makePage(three) {
     check('and at the same angle naming still refuses to decide on it',
       q.state().idStatus.text.includes('quay ngang') && q.state().idStatus.text.includes('không chắc tên'),
       true);
+  }
+  // 11d. the enrolment result has to be readable WITHOUT opening the log, and has to say what comes
+  // next: two learned children is the state in which one frame names both of them.
+  {
+    const p = makePage();
+    p.faceM.drop('hs2');
+    p.startLearn('hs2', 0);
+    for (let t = 0; t <= IDENTITY.LEARN_HOLD_MS + 260; t += 260) p.learnTick(mesh(B), t);
+    const line = p.seen.stats[p.seen.stats.length - 1];
+    check('the result line names both children the machine now knows',
+      line.includes('HS 1') && line.includes('HS 2') && line.includes('tự đọc tên từng em'), true);
+    check('and does not tell anyone to reopen the camera when the cap already covers them',
+      line.includes('Mở camera'), false);
+  }
+  // 11e. the cap is the trap: a bank for two children still names nobody until the model was built to
+  // look for the second face, so the line has to say that in the same breath as the success.
+  {
+    const p = makePage();
+    p.setBuiltFaces(1);
+    p.setNfaces(2);
+    p.startLearn('hs2', 0);
+    for (let t = 0; t <= IDENTITY.LEARN_HOLD_MS + 260; t += 260) p.learnTick(mesh(B), t);
+    const line = p.seen.stats[p.seen.stats.length - 1];
+    check('a stale face cap is reported as the reason two heads stay unnamed',
+      line.includes('đang tìm 1 mặt') && line.includes('Mở camera'), true);
   }
 }
 

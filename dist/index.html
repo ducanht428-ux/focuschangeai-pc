@@ -710,6 +710,29 @@ let autoIdOn = true;
 // Whether the children the camera names but nobody selected also get a run written into their own
 // profile. Default on, because "một lúc nhiều id" is the point of pointing the camera at a row of desks.
 let recPeersOn = true;
+// The face cap the running FaceLandmarker was actually built with, written by makeLandmarker. The
+// dropdown is not the truth: numFaces is read once when the model is created, so an operator who picks
+// "2 cùng khung" mid-sitting has changed the next camera open, not this one - and that is exactly how
+// "học đủ 2 em rồi mà máy không chịu đọc tên em thứ hai" gets reported.
+let builtNumFaces = 0;
+
+/**
+ * The button carries the enrolment count.
+ *
+ * The four seconds used to be reported only by a plate in the corner of the picture and a line in a log
+ * box below the fold, so pressing "Học mặt HS này" looked like pressing nothing. Derived from
+ * learningId every frame instead of from the places that clear it, because five paths end the hold
+ * (finish, a second head, a binding change, stop, reset) and a label left behind by any one of them is
+ * a button that lies.
+ */
+let learnBadge = '';
+function learnBadgeTick() {
+  const want = learningId ? 'Đang học… ' + learnGot + '/' + IDENTITY.SAMPLES : 'Học mặt HS này';
+  if (want === learnBadge) return;
+  learnBadge = want;
+  $('learnface').textContent = want;
+  $('learnface').disabled = !!learningId;
+}
 
 /** Pull every bank back out of storage: once at startup, and after a student is deleted. */
 function reloadFaces() {
@@ -850,6 +873,8 @@ function multiTick(faces, sigs, gates) {
     log('Đang học mặt cho "' + who + '" thì có ' + faces.length
       + ' người cùng xuất hiện - đã dừng học, vì không ai chắc khuôn mặt nào là em đó. '
       + 'Để một mình em ấy trong khung hình rồi bấm lại "Học mặt HS này".');
+    stat('Đã dừng học mặt cho "' + who + '": khung hình có ' + faces.length
+      + ' người, máy không biết mặt nào là em đó. Để một mình em ấy rồi bấm lại.');
     idStatus = null;
     faceLabels = null;
     faceRows = null;
@@ -1093,6 +1118,9 @@ function learnTick(pts, t) {
         ? 'cả ' + learnSkipped + ' khung đều bị bỏ (' + learnSkipNote + ') - để em ấy hướng mặt vào'
           + ' ống kính và cách camera đủ gần rồi bấm lại'
         : 'mặt quá nhỏ trong khung, hoặc lưới điểm không vững') + '.');
+    stat('Không học được khung mặt nào cho "' + nameOf(id) + '": '
+      + (learnSkipped ? 'cả ' + learnSkipped + ' khung ' + learnSkipNote
+        : 'mặt quá nhỏ hoặc lưới điểm không vững') + '. Bấm lại "Học mặt HS này" khi em ấy nhìn thẳng.');
     return;
   }
   const sep = faceM.separation(id);
@@ -1115,6 +1143,18 @@ function learnTick(pts, t) {
         ? 'đủ xa bán kính ' + r.toFixed(2) + ', tách được hai em.'
         : 'QUÁ SÁT bán kính ' + r.toFixed(2) + ', dễ nhận nhầm. Bấm "Học mặt HS này" thêm lần nữa cho mỗi em, quay đầu chậm trong 4 giây.'));
   }
+  // The count on the button answers "did it work", and this line answers the only question that comes
+  // next - what is still missing before two children in one frame get named automatically. Naming needs
+  // a bank for each of them, so the line lists who already has one instead of saying "thành công".
+  const learned = students().filter((s) => faceM.count(s.id) > 0).map((s) => nameOf(s.id));
+  stat('Đã học mặt cho "' + nameOf(id) + '" (' + n + '/' + IDENTITY.SAMPLES + ' khung). Máy đã biết: '
+    + learned.join(', ') + '. '
+    + (learned.length < 2
+      ? 'Còn ' + (2 - learned.length) + ' em nữa chưa học - chọn em đó trong ô "Học sinh" rồi bấm lại.'
+      : 'Đủ ' + learned.length + ' em: để các em cùng một khung hình, máy tự đọc tên từng em.')
+    + (builtNumFaces && builtNumFaces < +$('nfaces').value
+      ? ' (Máy này đang tìm ' + builtNumFaces + ' mặt, ô "Số mặt" để ' + $('nfaces').value
+        + ' - bấm "Mở camera" lại thì mới đọc đủ cả hai em.)' : ''));
   // A fresh bank is a reason to re-arm the seat gate even if nobody stood up in between.
   seatArmed = true;
 }
@@ -1640,6 +1680,7 @@ async function makeLandmarker(files, delegate) {
   // ever measured; two is what lets the operator put both children in the picture at once, and it costs
   // a second mesh per extra head - so it is a control, not a default the page quietly changes.
   const nf = Math.max(1, Math.min(4, parseInt($('nfaces').value, 10) || 1));
+  builtNumFaces = nf;
   return FaceLandmarker.createFromOptions(files, {
     baseOptions: { modelAssetPath: './face_landmarker.task', delegate },
     runningMode: 'VIDEO',
@@ -1938,6 +1979,7 @@ function loop() {
   // It also picks WHICH head the column measures when several are on screen, which is why lastPts is
   // written after this call and not at the detector.
   idTick(lastFaces, t);
+  learnBadgeTick();
   const pts = lastPts = lastFaces ? (lastFaces[measureIdx] || lastFaces[0]) : null;
   // The other heads are judged before anything is drawn, so a box over a second child is the same age as
   // the numbers column rather than one frame behind it. With one head in shot every peer session is
@@ -2074,6 +2116,7 @@ function stop() {
   // The seat bookkeeping belongs to a live camera: a stale "the chair was empty" would arm a switch the
   // moment the next sitting started.
   learningId = null;
+  learnBadgeTick();
   idStatus = null;
   absentSinceMs = 0;
   lastGapMs = 0;
@@ -2141,19 +2184,36 @@ $('addstu').onclick = () => {
 // Enrolment is deliberately a press-and-hold on the live picture rather than a photo upload: the
 // signature is only worth what the camera it came from is worth, and this booth has one camera.
 $('learnface').onclick = () => {
+  // Each refusal says so under the camera, not only in the log: these are the three presses that
+  // otherwise look like a dead button.
   if (!running) {
+    stat('Chưa mở camera nên không có khuôn mặt để học. Bấm "Mở camera" trước.');
     log('Chưa mở camera, nên không có khuôn mặt để học. Bấm "Mở camera" trước.');
     return;
   }
   if (!lastPts) {
+    stat('Không thấy mặt trong khung hình: đưa em đó vào giữa khung rồi bấm lại.');
     log('Không thấy mặt trong khung hình: đưa em đó vào giữa khung rồi bấm lại.');
     return;
   }
   // Enrolment is the one place a second head cannot be tolerated: nothing here says which of two faces
   // belongs to the name being learned, and a bank built from the wrong child is worse than no bank.
   if (lastFaces && lastFaces.length > 1) {
+    stat('Có ' + lastFaces.length + ' người trong khung hình. Học mặt phải làm khi "' + bound.name
+      + '" ở một mình - sau đó mới để hai em cùng khung.');
     log('Có ' + lastFaces.length + ' người trong khung hình. Học mặt chỉ chạy khi "'
       + bound.name + '" ở một mình - máy không có cách nào biết mặt nào là em đó.');
+    return;
+  }
+  // The guard above only counts faces the model was allowed to find, so with "Số mặt: 1" a second child
+  // is invisible to it and enrolment would happily learn whichever head came back first. YOLO still
+  // sees both bodies, so it is the witness here - refusing is the whole point of the check.
+  if (builtNumFaces < 2 && boxes && boxes.persons && boxes.persons.length > 1) {
+    stat('Thấy ' + boxes.persons.length + ' người trong khung nhưng "Số mặt" đang để '
+      + $('nfaces').value + ': máy chỉ tìm được một mặt nên không chắc mặt nào là "' + bound.name
+      + '". Bấm "Mở camera" lại với "Số mặt: 2 cùng khung", hoặc cho một mình em ấy vào khung.');
+    log('Không học: ' + boxes.persons.length + ' người trong khung hình mà FaceLandmarker được tạo với '
+      + builtNumFaces + ' mặt, nên khuôn mặt thứ hai không tồn tại với máy. Học mặt khi đó là đoán.');
     return;
   }
   learningId = bound.id;
@@ -2163,12 +2223,15 @@ $('learnface').onclick = () => {
   learnSkipped = 0;
   learnSkipNote = '';
   faceM.resetVotes();
+  stat('Đang học mặt cho "' + bound.name + '" - giữ yên, nhìn vào ống kính, 4 giây.');
   log('Học mặt cho "' + bound.name + '": giữ yên 4 giây, mặt hướng vào ống kính - đầu hơi lệch vẫn được'
     + ' học, lệch quá nhiều hoặc đầu chạm biên thì máy bỏ khung đó và nói rõ vì sao.');
 };
 // numFaces is a FaceLandmarker option, so it is read when the model gets built: changing it here changes
 // the NEXT "Mở camera", not the running one. Saying so beats an operator waiting for the third head.
 $('nfaces').onchange = () => {
+  stat('Số mặt = ' + $('nfaces').value + ' sẽ có hiệu lực từ lần mở camera kế tiếp'
+    + (running ? ' - bấm "Mở camera" lại để máy tìm đủ.' : '.'));
   log('Số mặt = ' + $('nfaces').value + ' - có hiệu lực từ lần mở camera kế tiếp (bấm "Mở camera").'
     + ' Mỗi mặt thêm là một lần lưới điểm phải tính trong cùng khung hình.');
 };
