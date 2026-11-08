@@ -334,7 +334,11 @@ function showBuildStamp() {
   if (!line || location.protocol === 'file:') return;
   fetch('BUILD.json', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).then((b) => {
     if (!b || !b.code) return;
-    line.textContent = 'Bản build ' + String(b.builtAt || '?').slice(0, 10) +
+    // The same clock format the update row uses, so the two lines can be compared by eye instead of
+    // trusting a hash that a js-only change does not move.
+    const d = b.builtAt ? new Date(String(b.builtAt)) : null;
+    line.textContent = 'Bản build ' + (d && !isNaN(d.getTime()) ?
+      d.toLocaleString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '?') +
       ' · mã ' + String(b.code).slice(0, 8) +
       ' · model ' + (b.model ? String(b.model).slice(0, 8) : 'không rõ');
   }).catch(() => {});
@@ -367,12 +371,23 @@ function checkForUpdate() {
     // a file that cannot run.
     const full = info.full ? human(info.full.bytes) + ' (' + bytes(info.full.bytes) + ')' : '';
     // A size alone does not tell anybody what they are getting, so the row names the build the download
-    // lands on and the build this machine is on now. Both come out of /update-info; when an older main.js
-    // answers without them the sentence is left out rather than printed with an empty hash.
-    const target = info.pack.code ?
-      'Bản mới ' + (info.pack.builtAt ? String(info.pack.builtAt).slice(0, 10) + ' ' : '') +
-        '· mã ' + String(info.pack.code).slice(0, 8) +
-        (info.from ? ', máy này đang ở mã ' + String(info.from).slice(0, 8) : '') + '. ' : '';
+    // lands on and the build this machine is on now. The date is the identifier, not the hash: a fix that
+    // only touches a js file leaves index.html - and therefore its hash - unchanged, and naming two equal
+    // hashes reads like a mistake. The hash is printed only when the two really differ.
+    const when = (b) => {
+      const d = b ? new Date(String(b)) : null;
+      return d && !isNaN(d.getTime()) ?
+        d.toLocaleString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+    };
+    const sameCode = !!info.pack.code && info.pack.code === info.from;
+    const name = (date, code) => [when(date), code && !sameCode ? 'mã ' + String(code).slice(0, 8) : '']
+      .filter(Boolean).join(' · ');
+    const far = name(info.pack.builtAt, info.pack.code);
+    const here = info.from || info.fromBuiltAt ?
+      (name(info.fromBuiltAt, info.from) || '(máy này không đọc được bản của nó)') : '';
+    const target = far ?
+      'Bản mới ' + far + (here ? ', máy này đang ở ' + here +
+        (sameCode ? ' (trang chính giữ nguyên, chỉ vài file mã js thay đổi)' : '') : '') + '. ' : '';
     btn.href = info.pack.url;
     btn.textContent = 'Tải bản mới (' + human(info.pack.bytes) + ')';
     btn.title = bytes(info.pack.bytes);

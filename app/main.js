@@ -175,7 +175,9 @@ async function checkForUpdate() {
   // of a fresh copy instead of being offered a 171 KB file that would leave it broken.
   const full = remote.full && remote.full.bytes ?
     { bytes: remote.full.bytes, sha256: remote.full.sha256, url: remote.full.url || '' } : null;
-  if (local.code === remote.code) return (updateInfo = { status: 'current', full });
+  // code is index.html alone, so a fix that only touches js/*.mjs would look current forever. files hashes
+  // every module beside it, and both have to agree before this machine is called up to date.
+  if (local.code === remote.code && local.files === remote.files) return (updateInfo = { status: 'current', full });
   const model = await sha256File(path.join(DIST, 'yolo11n.onnx'));
   updateInfo = {
     // A machine whose model differs cannot be fixed by the code pack, so it gets told to take a whole
@@ -185,6 +187,7 @@ async function checkForUpdate() {
     full,
     // The machine's own stamp, so the row can name both ends of the jump and be checked by eye.
     from: local.code,
+    fromBuiltAt: local.builtAt || '',
     dir: __dirname,
   };
 }

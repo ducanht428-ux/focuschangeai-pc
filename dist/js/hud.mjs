@@ -89,9 +89,11 @@ export const DOT = {
   mesh: { colour: [0, 255, 0], r: 2 },
 };
 
+// This sentence was copied from MainActivity.kt:1382, where it is true because the phone uploads to
+// Firestore and has a share button. Neither exists in this leg, so the text says what this build does.
 export const PRIVACY_NOTE = 'Mọi phép đo chạy trên máy này; app không lưu ảnh, không lưu video. '
-  + 'Khi bật Firebase, app tự gửi ba bản tổng kết (kèm tên do chính bạn nhập). '
-  + 'Bấm Chia sẻ báo cáo là cách duy nhất bạn chủ động đẩy thêm gì đi.';
+  + 'Hồ sơ và điểm đo chỉ nằm trong trình duyệt của máy này, app không gửi chúng đi đâu; '
+  + 'muốn mang sang máy khác dùng "Xuất danh sách".';
 
 /**
  * Format a number the way the phone does, or print its dash when there is none.
