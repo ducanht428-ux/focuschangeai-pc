@@ -22,19 +22,38 @@ export const YOLO_NMS_IOU = 0.45;
 export const YOLO_PAD = 114;
 
 // The COCO classes this project draws, spelled by id because the graph outputs rows, not names.
-// detection.py:19-24 keeps person 0 plus four context objects; js/detect.mjs's CONTEXT_VI is the same
-// list of object names, and test-objects.mjs fails if the two files ever disagree about an id - the
-// adjacent rows bottle 39 / wine glass 40 / cup 41 are exactly where a typo would go unnoticed, since
-// the wrong row still produces a confident box, just a mislabelled one.
-// Growing this list is cheap and was measured, not assumed: the 80-class pass costs the same inference
-// either way (Ultralytics outputs all 84 rows), and the only thing that scales with the list is the
-// decode loop below - 0.54 ms per frame at five classes, 1.56 ms at sixteen, against a 1,200-1,600 ms
-// pass on this laptop (bench-yolo-decode.mjs). Furniture is still absent for the reason in detect.mjs.
+// detection.py:19-24 keeps person 0 plus four context objects; js/detect.mjs's CONTEXT_VI now names forty,
+// so the two legs no longer hold the same list - that gap is written down in detect.mjs rather than
+// hidden. test-objects.mjs still fails if the two files disagree about an id, because the adjacent rows
+// bottle 39 / wine glass 40 / cup 41 are exactly where a typo would go unnoticed: the wrong row still
+// produces a confident box, just a mislabelled one.
+// Growing this list is cheap and was measured, not assumed: the pass scores all 84 rows either way
+// (Ultralytics output), and the only thing that scales with the list is the decode loop below. Re-run of
+// bench-yolo-decode.mjs on this laptop after the growth to 41 rows: 3.0 ms per frame, all 41 boxes kept,
+// against the 1,188-1,368 ms pass recorded at the top of this file - a fifth of one percent. Furniture is
+// still absent for the reason in detect.mjs.
+// Break-time reality moved the list from sixteen to forty-one rows: a lunchbox and a fruit are what a
+// Vietnamese primary-school desk actually holds, and every one of these rows was already scored by the
+// shipped weights, so the only cost is the decode loop above. Skis, snowboard, surfboard, vehicles,
+// animals, street furniture and kitchen appliances are still out - not because they are expensive but
+// because a box labelled "ván trượt tuyết" in a Hanoi classroom would read as a bug to the operator.
 export const YOLO_CLASSES = [
-  [0, 'person'], [24, 'backpack'], [63, 'laptop'], [67, 'cell phone'], [73, 'book'],
-  [39, 'bottle'], [41, 'cup'], [76, 'scissors'], [26, 'handbag'], [74, 'clock'],
-  [77, 'teddy bear'], [64, 'mouse'], [66, 'keyboard'], [65, 'remote'], [25, 'umbrella'],
-  [32, 'sports ball'],
+  [0, 'person'],
+  // bags, screens, time
+  [24, 'backpack'], [26, 'handbag'], [63, 'laptop'], [67, 'cell phone'], [64, 'mouse'],
+  [66, 'keyboard'], [65, 'remote'], [74, 'clock'], [62, 'tv'],
+  // reading and playing
+  [73, 'book'], [76, 'scissors'], [77, 'teddy bear'], [25, 'umbrella'], [32, 'sports ball'],
+  [29, 'frisbee'], [33, 'kite'], [34, 'baseball bat'], [35, 'baseball glove'],
+  [36, 'skateboard'], [38, 'tennis racket'],
+  // drink and tableware
+  [39, 'bottle'], [41, 'cup'], [40, 'wine glass'], [42, 'fork'], [43, 'knife'], [44, 'spoon'],
+  [45, 'bowl'],
+  // food
+  [46, 'banana'], [47, 'apple'], [48, 'sandwich'], [49, 'orange'], [50, 'broccoli'], [51, 'carrot'],
+  [52, 'hot dog'], [53, 'pizza'], [54, 'donut'], [55, 'cake'],
+  // worn and planted
+  [27, 'tie'], [58, 'potted plant'], [75, 'vase'],
 ];
 
 // Ultralytics 8.4 export was measured on this machine: the class rows are already sigmoid-applied

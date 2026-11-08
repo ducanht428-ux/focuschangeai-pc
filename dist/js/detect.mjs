@@ -15,9 +15,14 @@ export const YOLO_TEXT = [235, 235, 235];
 export const DETECT_CONF = 0.35;
 
 // Ultralytics keeps every box it finds (max_det defaults to 300, verified in this machine's
-// ultralytics/cfg), while MediaPipe's object detector returns at most maxResults. 32 is set so the cap
-// never silently truncates a classroom row - no booth has 32 people in one frame.
-export const DETECT_MAX_RESULTS = 32;
+// ultralytics/cfg), while MediaPipe's object detector returns at most maxResults. The cap exists so
+// nothing is silently truncated, so it has to be read against the allowlist, not against the room:
+// yolo.mjs slices AFTER per-class NMS, which means every object class added to CONTEXT_VI puts its
+// boxes into the same competition. 32 was safe at sixteen classes; at forty-one a lunchbox frame of
+// apples and buns could push a low-confidence phone out of the top 32, and 'phone' is the one name
+// phoneContextPenalty() reads - so the truncation would not cost a label, it would cost a score.
+// 64 is two full classroom rows of desk items and still far below what the pass can sort in time.
+export const DETECT_MAX_RESULTS = 64;
 
 // One parameter the two legs cannot share, so it is recorded rather than papered over: config.yaml:62
 // runs YOLO at imgsz 640, while efficientdet_lite0 has a fixed 320-pixel input and this API exposes no
@@ -29,7 +34,7 @@ export const DETECT_MAX_RESULTS = 32;
 // categories of { categoryName, displayName, index, score } with index = -1, so detection.py's numeric
 // ids (person 0, cell phone 67, book 73, laptop 63, backpack 24) cannot be matched here. The names are
 // matched instead, and CONTEXT_VI is also the allowlist: readBoxes() drops every box whose name is not a
-// key of it, which is why the list below is fifteen objects rather than the eighty the model can score.
+// key of it, which is why the list below is forty objects rather than the eighty the model can score.
 //
 // Both weights shipped in this folder carry the full COCO label table (verified by reading the strings
 // out of efficientdet_lite0.tflite: all 80 names are in it), so naming a chai nước costs no extra
@@ -38,17 +43,27 @@ export const DETECT_MAX_RESULTS = 32;
 // classroom, and they would out-number the desk items they are supposed to be background for.
 //
 // Parity, stated rather than glossed: focusedge/detection.py still whitelists four objects, so the
-// Python window names fewer things than this page until that dict grows too. The single rule that can
-// move a score reads only 'phone' (phoneContextPenalty below), and both legs have always had that name,
-// so the two screens still cannot disagree about attention - only about labels.
+// Python window names far fewer things than this page until that dict grows too. The single rule that
+// can move a score reads only 'phone' (phoneContextPenalty below), and both legs have always had that
+// name, so the two screens still cannot disagree about attention - only about labels.
 //
-// "hộp bút" has no COCO class and no honest translation here: the model cannot name a pencil case, and
-// it will report nothing, or occasionally call one a book or a handbag.
+// Three things a classroom desk holds that no row of either weight can name: a pen or pencil, a
+// notebook, and a pencil case. They are not in the COCO label set at all, so the model reports nothing
+// or occasionally calls them a book, a handbag or a remote - there is no honest Vietnamese plate to
+// print for them, which is why "bút" and "vở" cannot be added by editing a list.
 export const CONTEXT_VI = {
   phone: 'điện thoại', book: 'sách', laptop: 'laptop', backpack: 'ba lô',
   bottle: 'chai nước', cup: 'cốc nước', scissors: 'cái kéo', handbag: 'túi xách',
   clock: 'đồng hồ', 'teddy bear': 'gấu bông', mouse: 'chuột máy tính',
   keyboard: 'bàn phím', remote: 'điều khiển', umbrella: 'cái ô', 'sports ball': 'quả bóng',
+  tv: 'tivi', kite: 'con diều', frisbee: 'đĩa ném', skateboard: 'ván trượt',
+  'tennis racket': 'cái vợt', 'baseball bat': 'gậy bóng chày',
+  'baseball glove': 'găng bóng chày', 'wine glass': 'ly nước', fork: 'cái nĩa',
+  knife: 'con dao', spoon: 'cái thìa', bowl: 'cái bát', banana: 'quả chuối',
+  apple: 'quả táo', sandwich: 'bánh sandwich', orange: 'quả cam', broccoli: 'bông cải',
+  carrot: 'củ cà rốt', 'hot dog': 'bánh mì hot dog', pizza: 'bánh pizza',
+  donut: 'bánh donut', cake: 'bánh ngọt', tie: 'cà vạt', 'potted plant': 'chậu cây',
+  vase: 'lọ hoa',
 };
 const CONTEXT_ALIASES = { 'cell phone': 'phone' };
 

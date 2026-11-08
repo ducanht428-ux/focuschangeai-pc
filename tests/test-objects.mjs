@@ -97,5 +97,29 @@ check('bottle decodes near the centre', !!b && Math.abs(b.boundingBox.originX - 
 check('bottle survives readBoxes after a real decode',
   readBoxes(dec).objects.map((o) => o.name), (v) => v.length === 1 && v[0] === 'bottle');
 
+// The cap is the part of widening the list that could move a SCORE rather than a label: yolo.mjs slices
+// the top maxResults AFTER per-class NMS, so a lunchbox frame competes with the one name
+// phoneContextPenalty() reads. Here 40 objects outrank a phone sitting at 0.36, just over the bar.
+const many = new Float32Array(84 * S);
+const plantAt = (buf, i, cls, score) => {
+  buf[i] = 100 + (i % 400); buf[S + i] = 100 + (i % 300);
+  buf[2 * S + i] = 40; buf[3 * S + i] = 40;
+  buf[(4 + cls) * S + i] = score;
+};
+let slot = 100;
+for (const [id] of YOLO_CLASSES) {
+  if (id !== 67) plantAt(many, slot++, id, 0.9);
+}
+plantAt(many, 4000, 67, 0.36);   // the weakest box in the frame is the one that matters
+const wide = decodeYolo(many, letterboxPlan(640, 480), 640, 480, DETECT_CONF);
+check('every allowed class reaches the overlay', wide.detections.length, YOLO_CLASSES.length);
+check('a phone at the bottom of a busy frame is not truncated away',
+  wide.detections.some((d) => d.categories[0].categoryName === 'cell phone'), true);
+check('the same frame at the old cap of 32 would have dropped it',
+  decodeYolo(many, letterboxPlan(640, 480), 640, 480, DETECT_CONF, 32).detections
+    .some((d) => d.categories[0].categoryName === 'cell phone'), false);
+check('the busy frame still hands the phone to the name the score rule reads',
+  readBoxes(wide).objects.some((o) => o.name === 'phone'), true);
+
 console.log(fails ? '\n' + fails + ' FAILED' : '\nall object checks passed');
 process.exit(fails ? 1 : 0);
