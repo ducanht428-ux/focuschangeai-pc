@@ -353,9 +353,17 @@ function showBuildStamp() {
     // The same clock format the update row uses, so the two lines can be compared by eye instead of
     // trusting a hash that a js-only change does not move.
     const d = b.builtAt ? new Date(String(b.builtAt)) : null;
+    // A release that only touches modules leaves `code` exactly where it was, and the clock alone is not
+    // an identity: it says when, not what. So the module list gets its own short checksum - FNV-1a over the
+    // comma-separated name=hash string that make-stamp.ps1 writes, which is the same string the app's
+    // update check compares in main.js:180. Two builds with the same page and different modules now print
+    // different text, which is the one thing a field machine can be asked to read aloud.
+    const fnv = (s) => { let x = 0x811c9dc5; for (let i = 0; i < s.length; i++) { x ^= s.charCodeAt(i);
+      x = Math.imul(x, 0x01000193) >>> 0; } return x.toString(16).padStart(8, '0'); };
     line.textContent = 'Bản build ' + (d && !isNaN(d.getTime()) ?
       d.toLocaleString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '?') +
-      ' · mã ' + String(b.code).slice(0, 8) +
+      ' · mã trang ' + String(b.code).slice(0, 8) +
+      ' · mã module ' + (b.files ? fnv(String(b.files)) : 'không rõ') +
       ' · model ' + (b.model ? String(b.model).slice(0, 8) : 'không rõ');
   }).catch(() => {});
 }
