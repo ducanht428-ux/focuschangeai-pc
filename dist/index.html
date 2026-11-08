@@ -176,17 +176,18 @@
   </div>
 
   <div id="camcol">
-    <!-- The six view switches as buttons. They used to exist only as the keys F Y O G P H, which a phone
+    <!-- The five view switches as buttons. They used to exist only as the keys F Y O G H, which a phone
          has no way to press. They sit directly ABOVE the picture, not below it, for one measured reason:
-         at 412x915 the row under the camera ended 19 px past the fold and its second line of buttons was
-         half cut off, while here the whole row and the whole camera box both fit on the first screen.
-         The labels stop short of the wording in the line below; the long ones wrapped to a third line. -->
+         at 412x915 the row under the camera ended past the fold and its second line of buttons was half
+         cut off, while here the whole row and the whole camera box both fit on the first screen.
+         The labels stop short of the wording in the line below; the long ones wrapped to a third line.
+         P ("vì sao hơi lag", the per-stage millisecond breakdown) was removed on 2026-11-08 at the author's
+         request, together with the perf timers that only it read. -->
     <div class="btnrow" id="keyrow">
       <button data-key="f" title="Phím F">Hộp mặt</button>
       <button data-key="y" title="Phím Y">Hộp người</button>
       <button data-key="o" title="Phím O">Số liệu đè khung</button>
       <button data-key="g" title="Phím G">Tăng sáng</button>
-      <button data-key="p" title="Phím P">Vì sao lag</button>
       <button data-key="h" title="Phím H">Ẩn cột</button>
     </div>
 
@@ -221,7 +222,7 @@
           <select id="rate"><option value="2">2 lần mỗi giây</option><option value="4">4 lần mỗi giây</option><option value="8">8 lần mỗi giây (bản Python)</option></select>
         </label>
       </div>
-      <div id="statline">Chưa mở camera. Bấm "Mở camera" rồi chọn "Cho phép" khi trình duyệt hỏi. Hàng nút ngay trên khung hình - Hộp mặt, Hộp người, Số liệu đè khung, Tăng sáng, Vì sao lag, Ẩn cột - bấm được trên điện thoại; trên máy tính thì dùng phím F Y O G P H.</div>
+      <div id="statline">Chưa mở camera. Bấm "Mở camera" rồi chọn "Cho phép" khi trình duyệt hỏi. Hàng nút ngay trên khung hình - Hộp mặt, Hộp người, Số liệu đè khung, Tăng sáng, Ẩn cột - bấm được trên điện thoại; trên máy tính thì dùng phím F Y O G H.</div>
       <div class="btnrow">
         <span id="fps">--</span><span id="verdict">&nbsp;</span><span id="det"></span><span id="boost"></span><span id="rows"></span>
       </div>
@@ -1155,15 +1156,6 @@ const detStamps = [];
 // What the scene term took off the last measured frame, kept so the footer can say it and the log can
 // mention it once instead of every frame. 0 is also the answer when nothing has been detected.
 let contextPenaltyNow = 0;
-// Where the milliseconds of one frame actually go, as an exponential mean over the last ~20 frames.
-// "hơi lag" is a claim about feel; only these five numbers say which stage to fix, and the P key prints
-// them. Nothing here changes a measurement - it only times the code that already ran.
-const perf = { land: 0, light: 0, enh: 0, proc: 0, draw: 0, paint: 0 };
-function perfAdd(key, ms) { perf[key] = perf[key] ? perf[key] * 0.9 + ms * 0.1 : ms; }
-// An exponential mean only exists once a frame has run through it, and perf.copy/perf.grab are filled by
-// the light-reading stage rather than initialised here - so P pressed before "Mở camera" used to read
-// undefined.toFixed and throw instead of answering the question. A dash is the honest no-measurement answer.
-const perfMs = (v) => v === undefined || v === null ? '--' : (v < 10 ? v.toFixed(1) : v.toFixed(0));
 // How long a head may vanish and keep its number is the Python leg's own track_ttl_ms: 15000
 // (config.yaml:67), which is detect.mjs's default. It stays fixed when the cadence changes, because the
 // leg it came from counts milliseconds, not passes.
@@ -1697,7 +1689,7 @@ async function init() {
   stat('Đang đo. F: hộp mặt (' + (showBox ? 'bật' : 'tắt') + ') · Y: hộp phát hiện người ('
     + (showYolo ? 'bật' : 'tắt') + ') · O: số liệu đè khung hình ('
     + (numbersOnFrame ? 'bật' : 'tắt') + ') · G: tăng cường ảnh thiếu sáng ('
-    + (enhanceAuto ? 'tự động' : 'tắt') + ') · H: cột số liệu · P: vì sao hơi lag');
+    + (enhanceAuto ? 'tự động' : 'tắt') + ') · H: cột số liệu');
   $('stop').disabled = false;
   running = true;
   personIds.reset();
@@ -1768,30 +1760,23 @@ function loop() {
   const wantProbe = enhancer.active || t - probeAtMs >= LIGHT_READ_MS;
   let img = null;
   let light = lastLight;
-  const tFrame = performance.now();
   if (wantProbe) {
     pctx.drawImage(video, 0, 0, cv.width, cv.height);
-    perfAdd('copy', performance.now() - tFrame);
     try {
-      const tGrab = performance.now();
       img = pctx.getImageData(0, 0, cv.width, cv.height);
-      perfAdd('grab', performance.now() - tGrab);
       light = readLight(img.data, cv.width, cv.height, lastPts);
       lastLight = light;
       probeAtMs = t;
     } catch (e) { log('Đọc ánh sáng thất bại: ' + e.message); }
   }
-  perfAdd('light', performance.now() - tFrame);
 
   // Enhancement runs on the raw reading it just reported, and only then does the frame go to the
   // models. lumaMean stays the room's own brightness, never the brightness this stage produced.
   let enhanced = false;
   if (img && light) {
-    const tEnh = performance.now();
     const box = lastPts ? faceRoi(lastPts, cv.width, cv.height) : null;
     const r = enhancer.process(img.data, cv.width, cv.height, box, light, t, enhanceAuto);
     if (r.changed) { ctx.putImageData(img, 0, 0); enhanced = true; }
-    perfAdd('enh', performance.now() - tEnh);
   }
   // In normal light the canvas holds nothing but overlays and must be emptied, or the last lifted frame
   // would stay painted over the live video.
@@ -1805,7 +1790,6 @@ function loop() {
   try { res = landmarker.detectForVideo(source, t); }
   catch (e) { log('detect thất bại: ' + e.message); }
   const cost = performance.now() - tLand;
-  perfAdd('land', cost);
   lastFaces = res && res.faceLandmarks && res.faceLandmarks.length ? res.faceLandmarks : null;
 
   // Layer 1 on its own clock, the way config.yaml's detect_fps: 8 paces it on the Python leg. It is a
@@ -1859,9 +1843,7 @@ function loop() {
   // the numbers column rather than one frame behind it. With one head in shot every peer session is
   // paused instead: a child who stepped out must not have their number dragged down by the gap.
   if (lastFaces && lastFaces.length > 1 && faceRows) {
-    const tPeer = performance.now();
     peerTick(lastFaces, res.faceBlendshapes, t, light);
-    perfAdd('proc', performance.now() - tPeer);
   } else {
     peerAlerts = null;
     for (const [id, peer] of peerSessions) {
@@ -1869,7 +1851,6 @@ function loop() {
       if (t - peer.at > 60000) peerSessions.delete(id);
     }
   }
-  const tDraw = performance.now();
   let lines = [];
 
   // Boxes first, so the phone's dots stay readable on top of them and the numbers the operator is
@@ -1899,7 +1880,6 @@ function loop() {
   }
 
   if (pts) {
-    const tProc = performance.now();
     // faceBlendshapes is indexed by face, and once a second head is in shot the measured one is not
     // necessarily index 0 - so the blendshapes handed to the pipeline are the ones belonging to the
     // head being scored, not whichever head the detector happened to list first.
@@ -1929,26 +1909,20 @@ function loop() {
     }
     lines = hudLines(toHud(r), lastFaces ? lastFaces.length : 1, cost, fpsStamps.length,
       hudThr(), imgProcText());
-    perfAdd('proc', performance.now() - tProc);
 
     // Dots always, exactly as the phone's Canvas does; the crop box is this leg's addition.
     drawLandmarks(pts);
     if (showBox) drawFaceBox(pts);
   } else {
     // No face is missing data, not inattention: neither window may average the gap.
-    const tProc = performance.now();
     session.pause(t);
     lines = hudLines(null, 0, cost, fpsStamps.length, hudThr(), imgProcText());
-    perfAdd('proc', performance.now() - tProc);
     if (showBox) plate(4, 4, 'không thấy mặt trong khung hình', C.RED, 12);
   }
-  perfAdd('draw', performance.now() - tDraw);
 
   lastLines = lines;
-  const tPaint = performance.now();
   if (numbersOnFrame) paintOnFrame(lines);
   if (!$('hud').classList.contains('hidden')) paintRows(lines);
-  perfAdd('paint', performance.now() - tPaint);
   raf = requestAnimationFrame(loop);
 }
 
@@ -2252,7 +2226,7 @@ function applyWide() {
 // picked one by hand.
 addEventListener('resize', () => { applyWide(); autoFit(); });
 
-// The six view switches, in one place so a key press and a button press cannot drift apart. They used to
+// The five view switches, in one place so a key press and a button press cannot drift apart. They used to
 // exist ONLY as keys, which made them unreachable on a phone - and this leg is meant to be openable there.
 function pressKey(key) {
   const k = String(key).toLowerCase();
@@ -2272,31 +2246,13 @@ function pressKey(key) {
     enhancer.reset();
     log('Tăng cường ảnh thiếu sáng: ' + (enhanceAuto ? 'tự động' : 'tắt') + ' · bấm lại để đổi');
   }
-  else if (k === 'p') {
-    // The answer to "hơi lag": which stage costs what, measured on the machine standing in front of the
-    // screen right now. The YOLO thread is printed too, because 'wasm+worker' and 'wasm' feel completely
-    // different even when the per-pass millisecond figure is the same.
-    // "đọc ánh sáng" is the amortised cost of one frame; "chép hình" and "đọc điểm ảnh" are the cost of
-    // one READING, and readings only happen every LIGHT_READ_MS while the enhancer is idle. Measured on
-    // the C270 through real Chrome, 2026-11-05: a 640x480 copy alone is 7.1 ms and its readback 2.4 ms,
-    // and inside a running session the same pair cost 13 and 3.4 ms - which is why they are separate.
-    log('Nặng nhất mỗi khung hình: landmarker ' + perfMs(perf.land) + ' · đọc ánh sáng ' + perfMs(perf.light)
-      + ' (mỗi lượt đọc: chép hình ' + perfMs(perf.copy) + ' + đọc điểm ảnh ' + perfMs(perf.grab) + ')'
-      + ' · tăng cường ' + perfMs(perf.enh)
-      + ' · đo ' + perfMs(perf.proc) + ' · vẽ ' + perfMs(perf.draw) + ' · chữ ' + perfMs(perf.paint)
-      + ' ms · khung hình ' + fpsStamps.length + '/s'
-      + (yoloEngine ? ' · YOLO11n ' + perfMs(yoloEngine.lastMs) + ' ms/lượt, luồng ' + yoloEngine.thread
-        : ' · lớp 1: ' + (detector ? 'lite0' : 'tắt'))
-      + ' · lượt lớp 1 ' + detStamps.length + '/s'
-      + ' · ' + (imgProcText() || 'chưa đọc ánh sáng'));
-  }
   else if (k === 'h') { hudEl.classList.toggle('hidden'); }
   else return false;
   stat('F: hộp mặt (' + (showBox ? 'bật' : 'tắt') + ') · Y: hộp phát hiện người ('
     + (showYolo ? 'bật' : 'tắt') + ') · O: số liệu đè lên khung hình ('
     + (numbersOnFrame ? 'bật' : 'tắt') + ') · G: tăng cường ảnh thiếu sáng ('
     + (enhanceAuto ? 'tự động' : 'tắt') + ') · H: cột số liệu ('
-    + (hudEl.classList.contains('hidden') ? 'ẩn' : 'hiện') + ') · P: vì sao hơi lag');
+    + (hudEl.classList.contains('hidden') ? 'ẩn' : 'hiện') + ')');
   return true;
 }
 
@@ -2305,7 +2261,7 @@ addEventListener('keydown', (ev) => {
   if (pressKey(ev.key)) ev.preventDefault();
 });
 
-// The same six, as buttons, so a phone or a tablet can reach them. Wired by data-key, because the labels
+// The same five, as buttons, so a phone or a tablet can reach them. Wired by data-key, because the labels
 // are what an operator reads and the key is what the shared function already understands.
 function wireKeyRow() {
   const row = document.getElementById('keyrow');
