@@ -227,10 +227,19 @@
         <span id="fps">--</span><span id="verdict">&nbsp;</span><span id="det"></span><span id="boost"></span><span id="rows"></span>
       </div>
       <!-- Installed-app affordance. The row only exists while the browser is offering an install it has
-           not been asked for yet, and it disappears the moment the app is installed. -->
+           not been asked for yet, and it disappears the moment the app is installed.
+           The sentence is set by the script below, because on a phone the same button lands the icon on the
+           home screen and has nothing to do with a Start Menu. -->
       <div class="btnrow" id="installrow" hidden>
         <button id="installbtn">Cài ứng dụng</button>
-        <span id="installhint">Chrome sẽ thêm FocusChangeAI vào Start Menu và mở thành cửa sổ riêng, chạy được cả khi mất mạng.</span>
+        <span id="installhint"></span>
+      </div>
+      <!-- The phone has no installer file to run, and not every browser hands the page a prompt to show a
+           button for - Safari never does, and Chrome withholds it until its own engagement rule is met.
+           So the manual route is printed too, as the same affordance typed out. Web only: inside the
+           installed app and the offline launcher this would be advice about a menu the reader cannot see. -->
+      <div class="btnrow" id="howtorow" hidden>
+        <span id="howtohint"></span>
       </div>
       <!-- The same build, as one file a machine without internet can run. The row is hidden until the
            archive is really next to this page, so a copied folder (which has no archive inside it) never
@@ -415,6 +424,17 @@ window.addEventListener('DOMContentLoaded', showFreshRow);
 let installOffer = null;
 const installRow = () => document.getElementById('installrow');
 const runningAsApp = () => matchMedia('(display-mode: standalone)').matches;
+const isTouch = () => matchMedia('(pointer: coarse)').matches;
+// The same button puts the icon somewhere different on a phone and on a desk machine, and only one of
+// those has a Start Menu - so the sentence is chosen from the device, not typed twice into the markup.
+function fillInstallHint() {
+  const el = document.getElementById('installhint');
+  if (!el) return;
+  el.textContent = isTouch()
+    ? 'Chrome hoặc Safari sẽ thêm FocusChangeAI vào màn hình chính và mở thành cửa sổ riêng, chạy được cả khi mất mạng.'
+    : 'Chrome sẽ thêm FocusChangeAI vào Start Menu và mở thành cửa sổ riêng, chạy được cả khi mất mạng.';
+}
+fillInstallHint();
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   installOffer = e;
@@ -439,6 +459,33 @@ if (installBtn) {
     if (row) row.hidden = true;
   }
 }
+
+// The manual route, for the browsers that never hand this page a prompt: Safari does not fire
+// beforeinstallprompt at all, and Chrome holds it back until its own rule is met. On a phone that means the
+// install exists but nothing on the screen says so, so the menu path is printed instead of a button.
+// Web only - inside the installed app and the offline launcher it would be advice about a menu the reader
+// is not looking at.
+function showInstallRoute() {
+  const row = document.getElementById('howtorow');
+  const hint = document.getElementById('howtohint');
+  if (!row || !hint) return;
+  const host = location.hostname;
+  if (location.protocol === 'file:' || host === '127.0.0.1' || host === 'localhost' || runningAsApp()) return;
+  // Chrome decides about its prompt early, so waiting past that is what keeps the two rows apart: if the
+  // button is up by now, this row has nothing to add.
+  setTimeout(() => {
+    if (installOffer || !installRow().hidden) return;
+    hint.textContent = 'Chưa có nút Cài ở đây thì thêm bằng tay: ' +
+      (isTouch()
+        ? 'Android - Chrome, menu ⋮ → "Thêm màn hình chính". iPhone/iPad - Safari, nút Chia sẻ → "Thêm màn hình chính".'
+        : 'Chrome/Edge, menu ⋮ → "Cài ứng dụng này".') +
+      ' Biểu tượng đó mở được cả khi mất mạng, vì model đã được lưu vào máy ở lần mở đầu tiên. ' +
+      'Hồ sơ học sinh và mặt đã học nằm trong trình duyệt của máy nào thì ở máy đó, nên cài xong vẫn phải ' +
+      'dùng "Xuất danh sách" để mang sang máy khác.';
+    row.hidden = false;
+  }, 6000);
+}
+window.addEventListener('DOMContentLoaded', showInstallRoute);
 
 // The service worker is what lets an installed app open when the school network is down. Registering is
 // only legal on https or a localhost origin, which is exactly the two ways this page is meant to run.
