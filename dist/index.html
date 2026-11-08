@@ -102,6 +102,20 @@
   body.wide #tech { flex:0 0 auto; }
   body.wide #hudwrap { min-height:0; }
   body.wide #oprow { flex:0 0 auto; }
+  /* A thumb is about 9 mm and Material's own floor for a tap target is 48 dp. Every control above is
+     sized for a mouse on a desk monitor and measures 27 px tall on a phone (measured 2026-11-08 at
+     412x915), which is small enough that a press often lands between two buttons. On a coarse pointer
+     each one gets height, roomier padding and the 14 px label it has in the phone's own UI. This is a
+     media query rather than a class because the same file is both windows, and it sits last so it
+     outranks the #tech and #bindrow rules above, which have the same specificity. */
+  @media (pointer: coarse) {
+    #screen button { min-height:44px; padding:9px 16px; font-size:14px; border-radius:22px; }
+    #screen select { min-height:44px; padding:9px 12px; font-size:14px; }
+    #screen a.dl { min-height:44px; padding:12px 16px; font-size:14px; }
+    #tech { font-size:14px; }
+    #statline { font-size:14px; }
+    #log { font-size:12px; }
+  }
 </style>
 </head>
 <body>
@@ -162,9 +176,24 @@
   </div>
 
   <div id="camcol">
-    <div id="cambox"><canvas id="view" width="640" height="480"></canvas></div>
+    <!-- The six view switches as buttons. They used to exist only as the keys F Y O G P H, which a phone
+         has no way to press. They sit directly ABOVE the picture, not below it, for one measured reason:
+         at 412x915 the row under the camera ended 19 px past the fold and its second line of buttons was
+         half cut off, while here the whole row and the whole camera box both fit on the first screen.
+         The labels stop short of the wording in the line below; the long ones wrapped to a third line. -->
+    <div class="btnrow" id="keyrow">
+      <button data-key="f" title="Phím F">Hộp mặt</button>
+      <button data-key="y" title="Phím Y">Hộp người</button>
+      <button data-key="o" title="Phím O">Số liệu đè khung</button>
+      <button data-key="g" title="Phím G">Tăng sáng</button>
+      <button data-key="p" title="Phím P">Vì sao lag</button>
+      <button data-key="h" title="Phím H">Ẩn cột</button>
+    </div>
+
+    <div id="cambox"><canvas id="view" width="640" height="480" aria-label="Khung hình camera"></canvas></div>
 
     <div id="tech">
+
       <div class="btnrow">
         <button id="start">Mở camera</button>
         <button id="stop" disabled>Dừng</button>
@@ -192,7 +221,7 @@
           <select id="rate"><option value="2">2 lần mỗi giây</option><option value="4">4 lần mỗi giây</option><option value="8">8 lần mỗi giây (bản Python)</option></select>
         </label>
       </div>
-      <div id="statline">Chưa mở camera. Bấm "Mở camera" rồi chọn "Cho phép" khi trình duyệt hỏi. Phím: F hộp mặt &middot; Y hộp người &middot; O số liệu đè khung hình &middot; H ẩn cột số liệu.</div>
+      <div id="statline">Chưa mở camera. Bấm "Mở camera" rồi chọn "Cho phép" khi trình duyệt hỏi. Hàng nút ngay trên khung hình - Hộp mặt, Hộp người, Số liệu đè khung, Tăng sáng, Vì sao lag, Ẩn cột - bấm được trên điện thoại; trên máy tính thì dùng phím F Y O G P H.</div>
       <div class="btnrow">
         <span id="fps">--</span><span id="verdict">&nbsp;</span><span id="det"></span><span id="boost"></span><span id="rows"></span>
       </div>
@@ -321,6 +350,8 @@ function checkForUpdate() {
     if (info.status === 'code') {
       hint.textContent = 'Bản này chỉ thay mã, giữ nguyên model và dữ liệu đã học. Giải nén đè vào ' + info.dir +
         ', chọn Replace. Danh sách học sinh cùng mặt đã học nằm ngoài thư mục đó nên vẫn còn.' +
+        // A tooltip needs a mouse to reveal, so on a touch screen the exact count has to be in the text.
+        (matchMedia('(hover: hover)').matches ? '' : ' (' + bytes(info.pack.bytes) + ')') +
         (full ? ' Máy chưa từng cài bản nào thì gói này không đủ: cần bản đầy đủ ' + full + '.' : '');
     } else {
       // A different or missing model is not something the code pack can fix, so the small file is put away
@@ -1129,7 +1160,10 @@ let contextPenaltyNow = 0;
 // them. Nothing here changes a measurement - it only times the code that already ran.
 const perf = { land: 0, light: 0, enh: 0, proc: 0, draw: 0, paint: 0 };
 function perfAdd(key, ms) { perf[key] = perf[key] ? perf[key] * 0.9 + ms * 0.1 : ms; }
-const perfMs = (v) => (v < 10 ? v.toFixed(1) : v.toFixed(0));
+// An exponential mean only exists once a frame has run through it, and perf.copy/perf.grab are filled by
+// the light-reading stage rather than initialised here - so P pressed before "Mở camera" used to read
+// undefined.toFixed and throw instead of answering the question. A dash is the honest no-measurement answer.
+const perfMs = (v) => v === undefined || v === null ? '--' : (v < 10 ? v.toFixed(1) : v.toFixed(0));
 // How long a head may vanish and keep its number is the Python leg's own track_ttl_ms: 15000
 // (config.yaml:67), which is detect.mjs's default. It stays fixed when the cadence changes, because the
 // leg it came from counts milliseconds, not passes.
@@ -2218,13 +2252,14 @@ function applyWide() {
 // picked one by hand.
 addEventListener('resize', () => { applyWide(); autoFit(); });
 
-addEventListener('keydown', (ev) => {
-  if (ev.target && /^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(ev.target.tagName)) return;
-  const k = ev.key.toLowerCase();
+// The six view switches, in one place so a key press and a button press cannot drift apart. They used to
+// exist ONLY as keys, which made them unreachable on a phone - and this leg is meant to be openable there.
+function pressKey(key) {
+  const k = String(key).toLowerCase();
   if (k === 'f') { showBox = !showBox; log('Hộp mặt: ' + (showBox ? 'bật' : 'tắt')); }
   else if (k === 'y') {
     showYolo = !showYolo;
-    // Off also stops the second model, which is the point of the key: the phone's screen has no boxes
+    // Off also stops the second model, which is the point of this switch: the phone's screen has no boxes
     // and no detector, so this is the one press that makes this leg's picture the phone's picture.
     if (!showYolo) { boxes = null; }
     log('Hộp phát hiện người: ' + (showYolo ? 'bật' : 'tắt')
@@ -2235,7 +2270,7 @@ addEventListener('keydown', (ev) => {
     // The phone's own auto/manual switch for this stage (ImageEnhancer.process's `auto`).
     enhanceAuto = !enhanceAuto;
     enhancer.reset();
-    log('Tăng cường ảnh thiếu sáng: ' + (enhanceAuto ? 'tự động' : 'tắt') + ' · G để đổi lại');
+    log('Tăng cường ảnh thiếu sáng: ' + (enhanceAuto ? 'tự động' : 'tắt') + ' · bấm lại để đổi');
   }
   else if (k === 'p') {
     // The answer to "hơi lag": which stage costs what, measured on the machine standing in front of the
@@ -2256,14 +2291,31 @@ addEventListener('keydown', (ev) => {
       + ' · ' + (imgProcText() || 'chưa đọc ánh sáng'));
   }
   else if (k === 'h') { hudEl.classList.toggle('hidden'); }
-  else return;
-  ev.preventDefault();
+  else return false;
   stat('F: hộp mặt (' + (showBox ? 'bật' : 'tắt') + ') · Y: hộp phát hiện người ('
     + (showYolo ? 'bật' : 'tắt') + ') · O: số liệu đè lên khung hình ('
     + (numbersOnFrame ? 'bật' : 'tắt') + ') · G: tăng cường ảnh thiếu sáng ('
     + (enhanceAuto ? 'tự động' : 'tắt') + ') · H: cột số liệu ('
     + (hudEl.classList.contains('hidden') ? 'ẩn' : 'hiện') + ') · P: vì sao hơi lag');
+  return true;
+}
+
+addEventListener('keydown', (ev) => {
+  if (ev.target && /^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(ev.target.tagName)) return;
+  if (pressKey(ev.key)) ev.preventDefault();
 });
+
+// The same six, as buttons, so a phone or a tablet can reach them. Wired by data-key, because the labels
+// are what an operator reads and the key is what the shared function already understands.
+function wireKeyRow() {
+  const row = document.getElementById('keyrow');
+  if (!row) return;
+  row.querySelectorAll('[data-key]').forEach((b) => {
+    b.addEventListener('click', () => { pressKey(b.getAttribute('data-key')); b.blur(); });
+  });
+}
+// A module script is deferred, so the DOM is already here when this runs.
+wireKeyRow();
 
 // The column exists before the camera does: an empty white box reads as a broken app, and the phone's
 // answer for "not measured yet" is the dash - so this is its no-face column, not invented numbers.
