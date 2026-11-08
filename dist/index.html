@@ -293,14 +293,18 @@ function checkForUpdate() {
   const btn = document.getElementById('updatebtn');
   const hint = document.getElementById('updatehint');
   if (!row || !btn || !hint) return;
-  const kilo = (n) => new Intl.NumberFormat('vi-VN').format(n) + ' B';
+  // A person compares a download against a download, and Windows quotes KB, so the button says KB/MB.
+  // The exact byte count stays in the tooltip for anyone checking the number against version.json.
+  const human = (n) => n >= 1048576 ? (n / 1048576).toFixed(1).replace('.', ',') + ' MB' : Math.round(n / 1024) + ' KB';
+  const bytes = (n) => new Intl.NumberFormat('vi-VN').format(n) + ' B';
   let tries = 0;
   const ask = () => fetch('/update-info', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).then((info) => {
     if (!info) return;
     if (info.status === 'checking') { if (tries++ < 5) setTimeout(ask, 2000); return; }
     if (info.status !== 'code' && info.status !== 'model') return;
     btn.href = info.pack.url;
-    btn.textContent = 'Tải bản mới (' + kilo(info.pack.bytes) + ')';
+    btn.textContent = 'Tải bản mới (' + human(info.pack.bytes) + ')';
+    btn.title = bytes(info.pack.bytes);
     if (info.status === 'code') {
       hint.textContent = 'Bản này chỉ thay mã, giữ nguyên model và dữ liệu đã học. Giải nén đè vào ' + info.dir +
         ', chọn Replace. Danh sách học sinh cùng mặt đã học nằm ngoài thư mục đó nên vẫn còn.';
