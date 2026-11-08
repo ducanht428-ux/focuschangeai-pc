@@ -134,6 +134,14 @@
       <label class="ctl">Học sinh <select id="student" aria-label="Học sinh được gắn hồ sơ"></select></label>
       <button id="addstu">Thêm HS</button>
       <button id="forgetstu">Xóa hồ sơ đã học</button>
+      <!-- The roster's only way out of this machine. The profiles live in this browser's own storage, so a
+           school computer that gets wiped - or a second booth that has to re-learn eight children by hand -
+           is the failure these two buttons exist to prevent. One JSON file, carried on purpose: nothing here
+           goes anywhere on its own, and the file holds landmark ratios, never a photograph. Import merges
+           and never overwrites; see js/store.mjs for what it refuses to touch. -->
+      <button id="exportstu" title="Lưu danh sách, hồ sơ và mặt đã học ra một tệp .json để mang sang máy khác">Xuất danh sách</button>
+      <button id="importstu" title="Nạp một tệp đã xuất: thêm những em máy này chưa có, không ghi đè dữ liệu đã học ở đây">Nhập danh sách</button>
+      <input id="importfile" type="file" accept=".json,application/json" hidden>
       <button id="learnface" title="Giữ 4 giây trước camera để máy nhận ra em này lần sau">Học mặt HS này</button>
       <label class="ctl">Tự nhận diện
         <select id="autoid" aria-label="Tự chuyển hồ sơ theo khuôn mặt">
@@ -300,8 +308,8 @@ import { DETECT_CONF, DETECT_MAX_RESULTS, PersonIds, YOLO_FACE, YOLO_OBJECT, YOL
 import { loadYoloEngine } from './js/yolo.mjs';
 import { FaceMatcher, IDENTITY, faceSignature, faceGate, assignFaces } from './js/identity.mjs';
 import { BREAK_DETECT_MS } from './js/params.mjs';
-import { addStudent, clearFace, clearProfile, currentId, faceRoster, loadProfile, nameOf,
-  saveFace, saveProfile, setCurrent, students } from './js/store.mjs';
+import { addStudent, clearFace, clearProfile, currentId, exportBundle, faceRoster, importBundle,
+  loadProfile, nameOf, saveFace, saveProfile, setCurrent, students } from './js/store.mjs';
 
 const $ = (id) => document.getElementById(id);
 const cv = $('view');
@@ -1986,6 +1994,76 @@ $('forgetstu').onclick = () => {
     + '" trong trình duyệt này. '
     + (nf ? 'Máy sẽ không còn tự nhận ra em này cho tới khi học mặt lại. ' : '')
     + 'Máy quay vẫn đang đo, nhưng học lại từ đầu.');
+};
+
+// What each refusal from importBundle means to the person holding the file. store.mjs stays free of
+// wording, so a reason code is only ever turned into a sentence here.
+const BUNDLE_REFUSED = {
+  json: 'không đọc được tệp này dạng JSON (file có thể bị cắt hoặc sai định dạng)',
+  kind: 'đây không phải tệp "danh sách" do FocusChangeAI PC xuất ra',
+  version: 'tệp được xuất bởi bản mới hơn bản đang chạy - cập nhật máy này rồi hãy nhập',
+  empty: 'tệp không chứa học sinh nào',
+};
+
+// The two roster files, on the same storage the buttons above write. Export is a download the operator
+// carries; import is a merge that cannot delete anything, so a wrong file costs a paragraph in the log
+// rather than a term of work. The app gets these for free: main.js already routes a completed download
+// into the user's Downloads folder and opens it there, and a file input is the OS picker in both shapes.
+$('exportstu').onclick = () => {
+  const b = exportBundle();
+  const nf = b.students.reduce((a, s) => a + s.faces.length, 0);
+  const ns = b.students.reduce((a, s) => a + (s.profile ? s.profile.sessions.length : 0), 0);
+  const file = 'focuschange-danh-sach-' + b.exportedAt.slice(0, 10) + '.json';
+  const url = URL.createObjectURL(new Blob([JSON.stringify(b)], { type: 'application/json' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = file;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoking the object URL too early cancels the download, so it outlives the click by a margin and is
+  // released then - a leak per click would only matter if somebody exported a hundred times.
+  setTimeout(() => URL.revokeObjectURL(url), 20000);
+  log('Đã xuất ' + b.students.length + ' học sinh (' + nf + ' khung mặt, ' + ns + ' phiên đã học) ra tệp "'
+    + file + '" - máy trình bày nó ở mục Tải xuống.'
+    + ' Tệp chỉ chứa tỉ lệ điểm khuôn mặt và số liệu đã học, không có ảnh của em nào.'
+    + ' Mở máy khác, bấm "Nhập danh sách" và chọn tệp này.');
+};
+$('importstu').onclick = () => $('importfile').click();
+$('importfile').onchange = async (ev) => {
+  const f = ev.target.files && ev.target.files[0];
+  // Cleared before reading: without this, picking the same file a second time fires no change event and
+  // the operator gets no answer at all.
+  ev.target.value = '';
+  if (!f) return;
+  let obj = null;
+  try {
+    obj = JSON.parse(await f.text());
+  } catch (e) {
+    obj = null;
+  }
+  const r = importBundle(obj);
+  if (r.reason) {
+    log('Không nhập từ "' + f.name + '": ' + BUNDLE_REFUSED[r.reason] + '. Máy này vẫn giữ nguyên dữ liệu.');
+    return;
+  }
+  const parts = [];
+  if (r.added) parts.push('thêm ' + r.added + ' em chưa có ở máy này');
+  if (r.renamed) parts.push('đặt tên ' + r.renamed + ' ô trống theo tệp');
+  if (r.rekeyed) parts.push('tách ' + r.rekeyed + ' em trùng id sang ô mới');
+  if (r.faces) parts.push('nạp ' + r.faces + ' khung mặt');
+  if (r.sessions) parts.push('học thêm ' + r.sessions + ' phiên');
+  const changed = parts.length > 0;
+  log('Nhập "' + f.name + '": ' + (changed ? parts.join(', ') : 'không có gì mới - máy này đã có đủ')
+    + (changed ? '. Danh sách và máy nhận diện đã cập nhật ngay, không cần mở lại trang.' : '.'));
+  if (r.facesKept) {
+    log('  ' + r.facesKept + ' em ĐÃ được học mặt trên máy này, nên giữ mặt của máy này: trộn khung học từ'
+      + ' một camera khác vào cùng em đó sẽ làm bán kính nhận diện lệch đi. Muốn lấy mặt trong tệp cho một'
+      + ' em, bấm "Xóa hồ sơ đã học" cho em đó rồi nhập lại tệp.');
+  }
+  if (r.sessionsKnown) log('  ' + r.sessionsKnown + ' phiên trong tệp đã có ở máy này nên không tính hai lần.');
+  reloadFaces();
+  fillStudents();
 };
 
 // Closing the tab must not throw away the sitting: the phone commits on onStop for exactly this reason.
