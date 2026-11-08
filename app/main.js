@@ -167,13 +167,19 @@ async function checkForUpdate() {
   // An install built before stamps existed cannot be compared, and guessing would be worse than silence.
   if (!local || !local.code) return (updateInfo = { status: 'unknown' });
   const pack = { url: remote.pack.url, bytes: remote.pack.bytes };
-  if (local.code === remote.code) return (updateInfo = { status: 'current' });
+  // The whole archive, when the site bothers to describe it. A machine that never installed anything, or
+  // whose model no longer matches, cannot be repaired by a code pack, so it has to be told the real price
+  // of a fresh copy instead of being offered a 171 KB file that would leave it broken.
+  const full = remote.full && remote.full.bytes ?
+    { bytes: remote.full.bytes, sha256: remote.full.sha256, url: remote.full.url || '' } : null;
+  if (local.code === remote.code) return (updateInfo = { status: 'current', full });
   const model = await sha256File(path.join(DIST, 'yolo11n.onnx'));
   updateInfo = {
     // A machine whose model differs cannot be fixed by the code pack, so it gets told to take a whole
     // fresh copy rather than being handed a half-update it has to discover later.
     status: model && remote.model && model === remote.model ? 'code' : 'model',
     pack,
+    full,
     dir: __dirname,
   };
 }

@@ -221,6 +221,14 @@
         <a class="dl" id="updatebtn" href="#" download>Tải bản mới</a>
         <span id="updatehint"></span>
       </div>
+      <!-- The other half of the update story: someone who has never taken a copy has no app to show them a
+           notice, so the published page has to say what a fresh install costs. It reads its own
+           version.json, which only exists on the site - inside the installed app and the offline launcher
+           the file is absent, the fetch fails and this row stays hidden. -->
+      <div class="btnrow" id="freshrow" hidden>
+        <a class="dl" id="freshbtn" href="#" download>Tải bản app đầy đủ</a>
+        <span id="freshhint"></span>
+      </div>
       <div id="log"></div>
     </div>
   </div>
@@ -302,24 +310,71 @@ function checkForUpdate() {
     if (!info) return;
     if (info.status === 'checking') { if (tries++ < 5) setTimeout(ask, 2000); return; }
     if (info.status !== 'code' && info.status !== 'model') return;
+    // Two different prices, and the machine has to know which one it owes. An installed app already owns
+    // the runtime and the models, so a refresh is the code pack; a machine that never took a copy, or whose
+    // model disagrees, needs the whole archive. Saying only the small number would send the second person
+    // a file that cannot run.
+    const full = info.full ? human(info.full.bytes) + ' (' + bytes(info.full.bytes) + ')' : '';
     btn.href = info.pack.url;
     btn.textContent = 'Tải bản mới (' + human(info.pack.bytes) + ')';
     btn.title = bytes(info.pack.bytes);
     if (info.status === 'code') {
       hint.textContent = 'Bản này chỉ thay mã, giữ nguyên model và dữ liệu đã học. Giải nén đè vào ' + info.dir +
-        ', chọn Replace. Danh sách học sinh cùng mặt đã học nằm ngoài thư mục đó nên vẫn còn.';
+        ', chọn Replace. Danh sách học sinh cùng mặt đã học nằm ngoài thư mục đó nên vẫn còn.' +
+        (full ? ' Máy chưa từng cài bản nào thì gói này không đủ: cần bản đầy đủ ' + full + '.' : '');
     } else {
-      // A different or missing model is not something the code pack can fix, so the button must not offer
-      // a file that would leave the machine half-updated.
-      btn.hidden = true;
-      hint.textContent = 'Model trên máy này khác hoặc thiếu so với bản mới, nên gói mã nhỏ không đủ. ' +
-        'Cần lấy lại bản đầy đủ từ USB hoặc GitHub Release và giải nén ra thư mục mới.';
+      // A different or missing model is not something the code pack can fix, so the small file is put away
+      // and the whole archive is offered instead - by link when a host really carries it, by size when not.
+      btn.hidden = !info.full || !info.full.url;
+      if (btn.hidden) {
+        hint.textContent = 'Model trên máy này khác hoặc thiếu so với bản mới, nên gói mã nhỏ không đủ. ' +
+          'Cần bản đầy đủ ' + (full || '(chưa rõ dung lượng)') + ' và hiện chưa có link tải tự động: ' +
+          'lấy từ USB hoặc GitHub Release, giải nén ra thư mục mới.';
+      } else {
+        btn.href = info.full.url;
+        btn.textContent = 'Tải bản đầy đủ (' + human(info.full.bytes) + ')';
+        btn.title = bytes(info.full.bytes);
+        hint.textContent = 'Model trên máy này khác hoặc thiếu so với bản mới, nên phải lấy lại toàn bộ. ' +
+          'Giải nén ra thư mục mới và mở FocusChangeAI.exe; dữ liệu đã học trong %APPDATA% vẫn còn.';
+      }
     }
     row.hidden = false;
   }).catch(() => {});
   ask();
 }
 window.addEventListener('DOMContentLoaded', checkForUpdate);
+
+// The fresh-install row. Same reason the stamp is read instead of inlined: the numbers belong to the release,
+// not to this file, so writing them here would change the very bytes they describe. An empty full.url is the
+// honest state today - no host we control can carry a 137 MB archive - and the row then names the size and
+// the USB route rather than pointing at a dead or stale link.
+function showFreshRow() {
+  const row = document.getElementById('freshrow');
+  const btn = document.getElementById('freshbtn');
+  const hint = document.getElementById('freshhint');
+  if (!row || !btn || !hint || location.protocol === 'file:') return;
+  const human = (n) => n >= 1048576 ? (n / 1048576).toFixed(1).replace('.', ',') + ' MB' : Math.round(n / 1024) + ' KB';
+  const bytes = (n) => new Intl.NumberFormat('vi-VN').format(n) + ' B';
+  fetch('./version.json', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).then((v) => {
+    if (!v || !v.full || !v.full.bytes) return;
+    const size = human(v.full.bytes);
+    if (v.full.url) {
+      btn.href = v.full.url;
+      btn.hidden = false;
+      btn.textContent = 'Tải app về máy (' + size + ')';
+      btn.title = bytes(v.full.bytes);
+      hint.textContent = 'Dành cho máy chưa từng cài: gồm cả Electron và model, giải nén ra thư mục mới rồi mở ' +
+        'FocusChangeAI.exe. ' + bytes(v.full.bytes) + ', sha256 ' + String(v.full.sha256 || '').slice(0, 12) + '.';
+    } else {
+      btn.hidden = true;
+      hint.textContent = 'Máy chưa từng cài thì cần bản đầy đủ ' + size + ' (' + bytes(v.full.bytes) +
+        '), quá lớn để đặt cạnh trang này; lấy từ USB hoặc GitHub Release. sha256 ' + String(v.full.sha256 || '').slice(0, 12) +
+        ' để kiểm tra file nhận được có đúng bản đang chạy không.';
+    }
+    row.hidden = false;
+  }).catch(() => {});
+}
+window.addEventListener('DOMContentLoaded', showFreshRow);
 
 // The install path. Chrome only fires beforeinstallprompt when the manifest, the service worker and an
 // https-or-localhost origin all line up, so the row reports what the browser really offers instead of
