@@ -9,10 +9,20 @@
 
 const { app, BrowserWindow, session, shell, systemPreferences } = require('electron');
 const http = require('http');
+const https = require('https');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
 const DIST = path.join(__dirname, 'dist');
+
+// The published site is the one address we control and can refresh at any time, so it doubles as the
+// announcement board: version.json says what the newest code hash is, and the code pack that carries it is
+// 169 KB instead of the 137 MB a fresh install needs. Read over https, once, at startup, and treated as
+// data only - the app never runs anything it finds there, never downloads by itself, and says nothing at
+// all when the machine has no network, because running with no network is the reason it exists.
+const VERSION_URL = process.env.FC_VERSION_URL ||
+  'https://focuschangeai-pc-fibfycas7he.qoder.website/version.json';
 
 // Measured in this app: with the window behind another one the HUD dropped from 17 FPS to 0, because
 // Chromium throttles requestAnimationFrame for occluded/background windows. A classroom tool must keep
@@ -85,11 +95,87 @@ function startServer() {
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
       if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, 'method not allowed');
+      const p = new URL(req.url, 'http://127.0.0.1').pathname;
+      // The page asks its own origin, so a browser tab on the published site never reaches this and a
+      // machine with no network gets the answer we already have instead of a failed external request.
+      if (p === '/update-info') return send(res, 200, JSON.stringify(updateInfo), TYPES['.json']);
       serveFile(req, res);
     });
     server.on('error', reject);
     server.listen(0, '127.0.0.1', () => resolve(server));
   });
+}
+
+function sha256File(target) {
+  return new Promise((resolve) => {
+    const h = crypto.createHash('sha256');
+    const s = fs.createReadStream(target);
+    s.on('error', () => resolve(null));
+    s.on('data', (c) => h.update(c));
+    s.on('end', () => resolve(h.digest('hex')));
+  });
+}
+
+function readJsonSafe(target) {
+  try {
+    return JSON.parse(fs.readFileSync(target, 'utf8'));
+  } catch (e) {
+    return null;
+  }
+}
+
+function getJson(url, ms) {
+  return new Promise((resolve) => {
+    // http is only ever reached through FC_VERSION_URL, which exists so the notice can be proved against
+    // a local server; the shipped default is the https site.
+    const lib = url.startsWith('http:') ? http : https;
+    const req = lib.get(url, { timeout: ms }, (res) => {
+      if (res.statusCode !== 200) {
+        res.resume();
+        return resolve(null);
+      }
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => {
+        body += c;
+        if (body.length > 200000) req.destroy();
+      });
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(body));
+        } catch (e) {
+          resolve(null);
+        }
+      });
+    });
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(null);
+    });
+    req.on('error', () => resolve(null));
+  });
+}
+
+// status: checking | current | code | model | offline | unknown
+let updateInfo = { status: 'checking' };
+
+async function checkForUpdate() {
+  const local = readJsonSafe(path.join(DIST, 'BUILD.json'));
+  const remote = await getJson(VERSION_URL, 6000);
+  dlog('update: remote=' + JSON.stringify(remote) + ' local=' + JSON.stringify(local));
+  if (!remote || !remote.code || !remote.pack || !remote.pack.url) return (updateInfo = { status: 'offline' });
+  // An install built before stamps existed cannot be compared, and guessing would be worse than silence.
+  if (!local || !local.code) return (updateInfo = { status: 'unknown' });
+  const pack = { url: remote.pack.url, bytes: remote.pack.bytes };
+  if (local.code === remote.code) return (updateInfo = { status: 'current' });
+  const model = await sha256File(path.join(DIST, 'yolo11n.onnx'));
+  updateInfo = {
+    // A machine whose model differs cannot be fixed by the code pack, so it gets told to take a whole
+    // fresh copy rather than being handed a half-update it has to discover later.
+    status: model && remote.model && model === remote.model ? 'code' : 'model',
+    pack,
+    dir: __dirname,
+  };
 }
 
 async function createWindow(port) {
@@ -175,6 +261,15 @@ app.whenReady().then(async () => {
   session.defaultSession.on('permission-check-complete', (e, permission, status) => {
     dlog('check permission=' + permission + ' status=' + status);
   });
+
+  // Started, not awaited: the window must come up at once, and /update-info replies "checking" until this
+  // lands, which the page retries for a few seconds.
+  checkForUpdate()
+    .then(() => dlog('update status=' + updateInfo.status + ' url=' + VERSION_URL))
+    .catch((e) => {
+      updateInfo = { status: 'offline' };
+      dlog('update threw: ' + e.message);
+    });
 
   await createWindow(port);
 

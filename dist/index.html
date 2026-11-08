@@ -66,6 +66,8 @@
   /* The offline-pack link is a link, not a control, but it has to read as the buttons beside it. */
   #tech a.dl { display:inline-block; font-size:12px; padding:6px 14px; border-radius:14px;
                color:#fffbfe; background:#6650a4; text-decoration:none; }
+  /* Same trap as .btnrow above: this rule sets display, so hiding the link needs saying twice. */
+  #tech a.dl[hidden] { display:none; }
   label.ctl { display:inline-flex; align-items:center; gap:6px; }
   /* The roster picker sits in the phone-shaped column, so it is sized like the buttons beside it
      instead of inheriting the browser's default form control. */
@@ -207,6 +209,18 @@
         <a class="dl" id="dllib" href="FocusChangeAI-PC.zip" download>Tải bản offline (27 MB)</a>
         <span id="dlhint">Giải nén rồi mở Chay-Webcam-PC.bat để chạy không cần mạng.</span>
       </div>
+      <!-- What is actually installed. An app copy is a frozen snapshot, so a machine can sit months behind
+           and look perfectly healthy; the only honest answer is to print the stamp of the bytes on disk.
+           BUILD.json is written by the build scripts, never typed, so it cannot drift from the code. -->
+      <div class="btnrow">
+        <span id="buildline">Bản build: không đọc được BUILD.json.</span>
+      </div>
+      <!-- Filled in only by the standalone app, which answers /update-info from its own loopback server.
+           A browser tab never asks, so this row never appears there. -->
+      <div class="btnrow" id="updaterow" hidden>
+        <a class="dl" id="updatebtn" href="#" download>Tải bản mới</a>
+        <span id="updatehint"></span>
+      </div>
       <div id="log"></div>
     </div>
   </div>
@@ -253,6 +267,55 @@ function showDownloadRow() {
   }).catch(() => {});
 }
 window.addEventListener('DOMContentLoaded', showDownloadRow);
+
+// The stamp is read rather than written into the page on purpose: inlining it would mean editing index.html
+// for every release, and index.html is exactly the file whose hash the stamp reports.
+function showBuildStamp() {
+  const line = document.getElementById('buildline');
+  if (!line || location.protocol === 'file:') return;
+  fetch('BUILD.json', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).then((b) => {
+    if (!b || !b.code) return;
+    line.textContent = 'Bản build ' + String(b.builtAt || '?').slice(0, 10) +
+      ' · mã ' + String(b.code).slice(0, 8) +
+      ' · model ' + (b.model ? String(b.model).slice(0, 8) : 'không rõ');
+  }).catch(() => {});
+}
+window.addEventListener('DOMContentLoaded', showBuildStamp);
+
+// The update notice. Only the standalone app asks, and only of its own loopback server: main.js reads our
+// hosted version.json and answers /update-info, so this page makes no cross-origin request and a machine
+// with no network gets silence instead of an error. On the published site and in the offline launcher the
+// host is not 127.0.0.1, so nothing is fetched at all. It never downloads or runs anything by itself - the
+// button is a plain link to the code pack.
+function checkForUpdate() {
+  if (location.hostname !== '127.0.0.1') return;
+  const row = document.getElementById('updaterow');
+  const btn = document.getElementById('updatebtn');
+  const hint = document.getElementById('updatehint');
+  if (!row || !btn || !hint) return;
+  const kilo = (n) => new Intl.NumberFormat('vi-VN').format(n) + ' B';
+  let tries = 0;
+  const ask = () => fetch('/update-info', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).then((info) => {
+    if (!info) return;
+    if (info.status === 'checking') { if (tries++ < 5) setTimeout(ask, 2000); return; }
+    if (info.status !== 'code' && info.status !== 'model') return;
+    btn.href = info.pack.url;
+    btn.textContent = 'Tải bản mới (' + kilo(info.pack.bytes) + ')';
+    if (info.status === 'code') {
+      hint.textContent = 'Bản này chỉ thay mã, giữ nguyên model và dữ liệu đã học. Giải nén đè vào ' + info.dir +
+        ', chọn Replace. Danh sách học sinh cùng mặt đã học nằm ngoài thư mục đó nên vẫn còn.';
+    } else {
+      // A different or missing model is not something the code pack can fix, so the button must not offer
+      // a file that would leave the machine half-updated.
+      btn.hidden = true;
+      hint.textContent = 'Model trên máy này khác hoặc thiếu so với bản mới, nên gói mã nhỏ không đủ. ' +
+        'Cần lấy lại bản đầy đủ từ USB hoặc GitHub Release và giải nén ra thư mục mới.';
+    }
+    row.hidden = false;
+  }).catch(() => {});
+  ask();
+}
+window.addEventListener('DOMContentLoaded', checkForUpdate);
 
 // The install path. Chrome only fires beforeinstallprompt when the manifest, the service worker and an
 // https-or-localhost origin all line up, so the row reports what the browser really offers instead of
