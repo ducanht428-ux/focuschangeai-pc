@@ -243,9 +243,10 @@
       </div>
       <!-- The same build, as one file a machine without internet can run. The row is hidden until the
            archive is really next to this page, so a copied folder (which has no archive inside it) never
-           offers a dead link. -->
+           offers a dead link. The size is filled in from the response, because a typed number is a number
+           that quietly stops being true. -->
       <div class="btnrow" id="dlrow" hidden>
-        <a class="dl" id="dllib" href="FocusChangeAI-PC.zip" download>Tải bản offline (27 MB)</a>
+        <a class="dl" id="dllib" href="FocusChangeAI-PC.zip" download>Tải bản offline</a>
         <span id="dlhint">Giải nén rồi mở Chay-Webcam-PC.bat để chạy không cần mạng.</span>
       </div>
       <!-- What is actually installed. An app copy is a frozen snapshot, so a machine can sit months behind
@@ -309,8 +310,19 @@ function showDownloadRow() {
       .catch(() => {});
     return;
   }
+  // The archive only ever sits beside a folder somebody copied and serves themselves. It is not on the
+  // published site (the artifact ceiling) and it is asserted absent inside the app, so asking for it on
+  // those origins is a guaranteed 404 in the console for a row that is already known to be hidden.
+  const host = location.hostname;
+  if (location.protocol === 'https:' || host === '127.0.0.1' || host === '[::1]') return;
   fetch(target.pathname + target.search, { method: 'HEAD' }).then((r) => {
-    if (r.ok) row.hidden = false;
+    if (!r.ok) return;
+    // Same-origin HEAD replies with the length without moving the bytes, so the label can carry the real
+    // size of the file that is actually there instead of a number written into the source.
+    const n = Number(r.headers.get('content-length') || '0');
+    if (n) link.textContent = 'Tải bản offline (' +
+      (n >= 1048576 ? (n / 1048576).toFixed(1).replace('.', ',') + ' MB' : Math.round(n / 1024) + ' KB') + ')';
+    row.hidden = false;
   }).catch(() => {});
 }
 window.addEventListener('DOMContentLoaded', showDownloadRow);
@@ -400,7 +412,10 @@ function showFreshRow() {
   const row = document.getElementById('freshrow');
   const btn = document.getElementById('freshbtn');
   const hint = document.getElementById('freshhint');
-  if (!row || !btn || !hint || location.protocol === 'file:') return;
+  // version.json is written into the publish staging tree only, so every other origin - the app, the
+  // launcher, a LAN copy - is a file that is known to be absent. Fetching it there buys a 404 in the console
+  // for a row that was never going to appear.
+  if (!row || !btn || !hint || location.protocol !== 'https:') return;
   const human = (n) => n >= 1048576 ? (n / 1048576).toFixed(1).replace('.', ',') + ' MB' : Math.round(n / 1024) + ' KB';
   const bytes = (n) => new Intl.NumberFormat('vi-VN').format(n) + ' B';
   fetch('./version.json', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).then((v) => {
