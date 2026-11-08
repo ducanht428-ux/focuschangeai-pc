@@ -166,7 +166,10 @@ async function checkForUpdate() {
   if (!remote || !remote.code || !remote.pack || !remote.pack.url) return (updateInfo = { status: 'offline' });
   // An install built before stamps existed cannot be compared, and guessing would be worse than silence.
   if (!local || !local.code) return (updateInfo = { status: 'unknown' });
-  const pack = { url: remote.pack.url, bytes: remote.pack.bytes };
+  // The pack is described by the release it comes from, so the page can say WHICH build a download lands on
+  // instead of only what it costs. builtAt and code are copied out of the hosted version.json, never measured
+  // here, so a stale cache cannot make the notice claim a newer build than the file it is about to hand over.
+  const pack = { url: remote.pack.url, bytes: remote.pack.bytes, builtAt: remote.builtAt || '', code: remote.code };
   // The whole archive, when the site bothers to describe it. A machine that never installed anything, or
   // whose model no longer matches, cannot be repaired by a code pack, so it has to be told the real price
   // of a fresh copy instead of being offered a 171 KB file that would leave it broken.
@@ -180,6 +183,8 @@ async function checkForUpdate() {
     status: model && remote.model && model === remote.model ? 'code' : 'model',
     pack,
     full,
+    // The machine's own stamp, so the row can name both ends of the jump and be checked by eye.
+    from: local.code,
     dir: __dirname,
   };
 }

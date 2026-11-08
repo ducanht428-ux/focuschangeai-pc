@@ -354,11 +354,18 @@ function checkForUpdate() {
     // model disagrees, needs the whole archive. Saying only the small number would send the second person
     // a file that cannot run.
     const full = info.full ? human(info.full.bytes) + ' (' + bytes(info.full.bytes) + ')' : '';
+    // A size alone does not tell anybody what they are getting, so the row names the build the download
+    // lands on and the build this machine is on now. Both come out of /update-info; when an older main.js
+    // answers without them the sentence is left out rather than printed with an empty hash.
+    const target = info.pack.code ?
+      'Bản mới ' + (info.pack.builtAt ? String(info.pack.builtAt).slice(0, 10) + ' ' : '') +
+        '· mã ' + String(info.pack.code).slice(0, 8) +
+        (info.from ? ', máy này đang ở mã ' + String(info.from).slice(0, 8) : '') + '. ' : '';
     btn.href = info.pack.url;
     btn.textContent = 'Tải bản mới (' + human(info.pack.bytes) + ')';
     btn.title = bytes(info.pack.bytes);
     if (info.status === 'code') {
-      hint.textContent = 'Bản này chỉ thay mã, giữ nguyên model và dữ liệu đã học. Giải nén đè vào ' + info.dir +
+      hint.textContent = target + 'Bản này chỉ thay mã, giữ nguyên model và dữ liệu đã học. Giải nén đè vào ' + info.dir +
         ', chọn Replace. Danh sách học sinh cùng mặt đã học nằm ngoài thư mục đó nên vẫn còn.' +
         // A tooltip needs a mouse to reveal, so on a touch screen the exact count has to be in the text.
         (matchMedia('(hover: hover)').matches ? '' : ' (' + bytes(info.pack.bytes) + ')') +
@@ -368,14 +375,14 @@ function checkForUpdate() {
       // and the whole archive is offered instead - by link when a host really carries it, by size when not.
       btn.hidden = !info.full || !info.full.url;
       if (btn.hidden) {
-        hint.textContent = 'Model trên máy này khác hoặc thiếu so với bản mới, nên gói mã nhỏ không đủ. ' +
+        hint.textContent = target + 'Model trên máy này khác hoặc thiếu so với bản mới, nên gói mã nhỏ không đủ. ' +
           'Cần bản đầy đủ ' + (full || '(chưa rõ dung lượng)') + ' và hiện chưa có link tải tự động: ' +
           'lấy từ USB hoặc GitHub Release, giải nén ra thư mục mới.';
       } else {
         btn.href = info.full.url;
         btn.textContent = 'Tải bản đầy đủ (' + human(info.full.bytes) + ')';
         btn.title = bytes(info.full.bytes);
-        hint.textContent = 'Model trên máy này khác hoặc thiếu so với bản mới, nên phải lấy lại toàn bộ. ' +
+        hint.textContent = target + 'Model trên máy này khác hoặc thiếu so với bản mới, nên phải lấy lại toàn bộ. ' +
           'Giải nén ra thư mục mới và mở FocusChangeAI.exe; dữ liệu đã học trong %APPDATA% vẫn còn.';
       }
     }
