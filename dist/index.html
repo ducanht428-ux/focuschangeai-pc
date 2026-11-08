@@ -93,19 +93,27 @@
   /* Picture left, numbers right, which is the camera window's arrangement and the order the operator
      asked for. The DOM stays numbers-first so the stacked view under 880 px is still the phone's
      reading order, and flex order is what flips the two columns without duplicating anything. */
-  body.wide #camcol { order:1; flex:1 1 54%; }
+  /* The split column scrolls: the camera box below now asks for the height its own width implies, and on
+     a short laptop window that is more than the column has. Letting it overflow is what keeps the picture
+     big; the controls underneath stay reachable by scrolling, and F Y O G H work without scrolling at all. */
+  body.wide #camcol { order:1; flex:1 1 54%; min-height:0; overflow-y:auto; }
   body.wide #numcol { order:2; flex:1 1 46%; min-width:300px; }
-  body.wide #cambox { flex:1 1 auto; min-height:0; max-height:none; width:100%; margin:0; aspect-ratio:auto; }
+  /* The box keeps the stream's own 4:3 instead of filling the column, because the column is much wider
+     than that: measured 2026-11-08 the old rule left 100% dead black (the box collapsed to 166x0 in a
+     starved window and to a wide letterbox in a real one), while this one holds ratio 1.333 with 0% dead
+     black and never collapses. At 1366x768 the column is ~720 px wide, so the picture is ~720x540 rather
+     than the ~333x250 the letterbox used to give. */
+  body.wide #cambox { flex:0 0 auto; min-height:0; max-height:none; width:100%; margin:0; aspect-ratio:4/3; }
   /* contain, not cover: the legend plate and every label sit at the picture's own edges
      (plate() clamps x to the frame width, and drawYolo prints at cv.width and at cv.height - 24), so a
      box that is not the stream's ratio would cut them off under cover. The bars are the box's own
      background and are painted by #cambox, not by the video, so the split layout shows the room inside
      the picture and black beside it - which is also why the two layers must keep the SAME fit here:
-     the canvas is only over the picture the viewer sees if both letterbox identically.
-     Narrow keeps cover for the phone's edge-to-edge look, and its box now holds the whole 4:3 picture
-     (see #cambox above), so cover no longer cuts anything at any window size. Measured 2026-11-05: the
-     wide split is the booth layout and ?split=1 forces it, so this only bites a deliberately narrow
-     window. */
+     the canvas is only over the picture the viewer sees if both letterbox identically. With the box now
+     4:3 the two fits agree, so contain costs nothing and still covers the tall-and-narrow case.
+     Narrow keeps cover for the phone's edge-to-edge look, and its box holds the whole 4:3 picture too
+     (see #cambox above), so nothing is cut at any window size. Measured 2026-11-05: the wide split is
+     the booth layout and ?split=1 forces it. */
   body.wide video.camvid, body.wide canvas#view { object-fit:contain; }
   body.wide #tech { flex:0 0 auto; }
   body.wide #hudwrap { min-height:0; }
