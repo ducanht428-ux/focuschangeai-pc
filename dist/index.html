@@ -83,6 +83,16 @@
   #log { font-family:Consolas, monospace; font-size:11px; white-space:pre-wrap; color:#5f5f5f;
          max-height:140px; overflow:auto; }
   #statline { font-size:12px; color:#5f5f5f; }
+  #cloudbox { border:1px solid #cac4d0; border-radius:12px; padding:12px; margin:8px 0; color:#1c1b1f; }
+  #cloudbox summary { cursor:pointer; font-size:14px; font-weight:600; }
+  #cloudbox p { margin:8px 0; line-height:1.5; }
+  #cloudform label { display:block; margin:8px 0; }
+  #cloudform input { display:block; box-sizing:border-box; width:100%; max-width:340px; margin-top:4px;
+                     font:inherit; font-size:14px; padding:9px 12px; border:1px solid #79747e; border-radius:8px; }
+  #clouderror { color:#b3261e; }
+  #cloudhistory { overflow-x:auto; }
+  #cloudhistory table { width:100%; border-collapse:collapse; margin-top:8px; }
+  #cloudhistory th, #cloudhistory td { text-align:left; padding:6px; border-bottom:1px solid #e7e0ec; }
 
   /* The two-column arrangement. It hangs off body.wide rather than straight off a media query because
      the class is set by one function that also honours ?split=1, so the operator can force the split in a
@@ -210,12 +220,34 @@
     <div id="cambox"><canvas id="view" width="640" height="480" aria-label="Khung hình camera"></canvas></div>
 
     <div id="tech">
-
       <div class="btnrow">
         <button id="start">Mở camera</button>
         <button id="stop" disabled>Dừng</button>
         <button id="reload">Chạy lại với cài đặt trên</button>
       </div>
+      <details id="cloudbox" open>
+        <summary>Đồng bộ Firebase</summary>
+        <p id="cloudstatus" role="status" aria-live="polite">Chưa đăng nhập. Vẫn có thể ghi và lưu trên máy.</p>
+        <form id="cloudform" method="post">
+          <label for="cloudemail">Email tài khoản ứng dụng
+            <input id="cloudemail" type="email" autocomplete="username" required>
+          </label>
+          <label for="cloudpassword">Mật khẩu ứng dụng
+            <input id="cloudpassword" type="password" autocomplete="current-password" required>
+          </label>
+          <button id="cloudlogin" type="submit" disabled>Đăng nhập để đồng bộ</button>
+          <p>Dùng tài khoản đã tạo trong Firebase Authentication, không phải phiên đăng nhập trang quản lý Google. App không lưu mật khẩu; mở lại app cần đăng nhập lại.</p>
+        </form>
+        <div class="btnrow">
+          <button id="cloudsync" type="button" disabled>Đồng bộ ngay</button>
+          <button id="cloudread" type="button" disabled>Xem phiên của HS đang chọn</button>
+          <button id="cloudlogout" type="button" hidden>Đăng xuất</button>
+        </div>
+        <p id="cloudqueue"></p>
+        <p id="clouderror" role="alert" hidden></p>
+        <p>Phiên ghi khi chưa đăng nhập sẽ gửi bằng tài khoản thành viên đăng nhập tiếp theo trên máy này. Phiên đã gắn tài khoản khác sẽ chờ tài khoản đó. Thành viên có quyền xem dữ liệu chung; mã học sinh không phải mã tài khoản.</p>
+        <div id="cloudhistory" aria-live="polite"></div>
+      </details>
       <div class="btnrow">
         <label class="ctl">Bộ xử lý
           <select id="delegate"><option value="GPU">GPU (WebGL)</option><option value="CPU">CPU</option></select>
@@ -555,6 +587,96 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('./sw.js').catch(() => {});
   });
 }
+</script>
+
+<script type="module">
+import { cloudState, subscribeCloud, signIn, signOut, syncNow, fetchSessions } from './js/cloud.mjs';
+
+const el = (id) => document.getElementById(id);
+let historyRequest = 0;
+let reading = false;
+let syncing = false;
+let shownUid = null;
+function clearHistory() {
+  historyRequest++;
+  reading = false;
+  el('cloudhistory').replaceChildren();
+}
+function renderCloud(state) {
+  const uid = state.user?.uid || null;
+  if (uid !== shownUid || state.access !== 'allowed') { shownUid = uid; clearHistory(); }
+  el('cloudform').hidden = !!state.user;
+  el('cloudemail').disabled = state.signingIn;
+  el('cloudpassword').disabled = state.signingIn;
+  el('cloudlogin').disabled = state.signingIn;
+  el('cloudlogin').textContent = state.signingIn ? 'Đang đăng nhập…' : 'Đăng nhập để đồng bộ';
+  el('cloudlogout').hidden = !state.user && !state.signingIn;
+  el('cloudlogout').textContent = state.signingIn ? 'Hủy đăng nhập' : 'Đăng xuất';
+  el('cloudsync').disabled = !state.user || state.signingIn || state.syncing || syncing;
+  el('cloudsync').textContent = state.syncing || syncing ? 'Đang đồng bộ…' : 'Đồng bộ ngay';
+  el('cloudread').disabled = !state.user || state.access !== 'allowed' || reading || !el('student').value;
+  el('cloudstatus').textContent = state.user
+    ? 'Đã đăng nhập: ' + state.user.email + (state.access === 'allowed'
+      ? ' · Đã xác nhận quyền đọc dữ liệu chung.' : ' · Chưa xác nhận được quyền truy cập dữ liệu.')
+    : 'Chưa đăng nhập. Vẫn có thể ghi và lưu trên máy.';
+  el('cloudqueue').textContent = state.pending + ' phiên đang chờ gửi trên máy này (tối đa 50 phiên).';
+  el('clouderror').hidden = !state.error;
+  el('clouderror').textContent = state.error;
+}
+subscribeCloud(renderCloud);
+el('cloudform').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const password = el('cloudpassword').value;
+  el('cloudpassword').value = '';
+  await signIn(el('cloudemail').value, password);
+});
+el('cloudlogout').addEventListener('click', () => { signOut(); el('cloudpassword').value = ''; });
+el('cloudsync').addEventListener('click', async () => {
+  syncing = true;
+  renderCloud(cloudState());
+  try { await syncNow(); }
+  finally { syncing = false; renderCloud(cloudState()); }
+});
+el('student').addEventListener('change', () => { clearHistory(); renderCloud(cloudState()); });
+el('cloudread').addEventListener('click', async () => {
+  const studentId = el('student').value;
+  if (!studentId) return;
+  const request = ++historyRequest;
+  reading = true;
+  renderCloud(cloudState());
+  el('cloudhistory').textContent = 'Đang đọc phiên của ' + studentId + '…';
+  try {
+    const rows = await fetchSessions(studentId);
+    if (request !== historyRequest) return;
+    el('cloudhistory').replaceChildren();
+    const title = document.createElement('p');
+    title.textContent = rows.length + ' phiên trên Firebase của ' + studentId + '. Không thay thế hồ sơ đang lưu trên máy.';
+    el('cloudhistory').append(title);
+    if (rows.length) {
+      const table = document.createElement('table');
+      const head = table.createTHead().insertRow();
+      for (const label of ['Kết thúc', 'Nguồn', 'Phút hợp lệ', 'SEI']) {
+        const cell = document.createElement('th');
+        cell.scope = 'col'; cell.textContent = label; head.append(cell);
+      }
+      const body = table.createTBody();
+      for (const row of rows) {
+        const tr = body.insertRow();
+        const when = new Date(row.ended_at_wall_ms);
+        const values = [row.ended_at_wall_ms && !isNaN(when.getTime()) ? when.toLocaleString('vi-VN') : '—',
+          row.source || 'Không ghi nguồn',
+          Number.isFinite(row.valid_ms) ? (row.valid_ms / 60000).toFixed(1) : '—',
+          Number.isFinite(row.mean_sei) ? row.mean_sei.toFixed(1) : '—'];
+        for (const value of values) tr.insertCell().textContent = value;
+      }
+      el('cloudhistory').append(table);
+    }
+  } catch (error) {
+    if (request === historyRequest) el('cloudhistory').textContent = error.message;
+  } finally {
+    if (request === historyRequest) { reading = false; renderCloud(cloudState()); }
+  }
+});
 </script>
 
 <script type="module">

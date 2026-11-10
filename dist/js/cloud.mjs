@@ -1,29 +1,172 @@
-// Layer 5 for the web leg - the same cloud sync the phone and the camera already have.
-//
-// The phone (FirebaseSync.kt) and the camera (firestore_writer.py) both write into one Firestore
-// collection keyed by studentId, the phone under sessions/<id>-<n> and the camera under
-// sessions/<id>-cam-<n>. This leg writes sessions/<id>-web-<n> beside them with the SAME column
-// names, so one child recorded on a phone, a camera and this page is three rows a teacher reads by
-// id - never one row that last-writer-wins. The namespacing lives in the key and nowhere else.
-//
-// The page holds no secret: it writes straight to Firestore over the public REST API, under the
-// project's rules (narrowed to create/update on sessions/<…>-web-<n> carrying source "web-pc"). No
-// SDK and no CDN script: the page must still boot with no network, so the cloud is a fetch that may
-// fail, never a script that must load. When the write fails (offline, rules, quota) the payload is
-// queued here and flushed on the next reach, the web twin of the edge-server's pending_upload.jsonl.
-// A failed upload must never stop a recording or a Dừng.
 import { HC, HF, HF_COUNT, HF_KEYS } from './habit.mjs';
 
 export const SOURCE_TAG = 'web';
 export const SOURCE = 'web-pc';
 export const SCHEMA = 1;
-// Public web config of the shared project - the one the Android app is registered in. Public by
-// design; the rules, not secrecy, are what protect the store.
+// Public Firebase web configuration; access is enforced by Auth and Firestore member rules.
+const FB_KEY = 'AIzaSyAFiXJySBY5zvF-vGE23aqpjaEJNvT4NCw';
 const FB_PROJECT = 'focuschangedai';
 const FB_BASE = 'https://firestore.googleapis.com/v1/projects/' + FB_PROJECT
   + '/databases/(default)/documents';
 const QUEUE_KEY = 'focuschange_pc_pending_upload';
 const QUEUE_MAX = 50;
+const listeners = new Set();
+const requests = new Set();
+let auth = null;
+let authVersion = 0;
+let signingIn = false;
+let access = 'unchecked';
+let lastError = '';
+let flushJob = null;
+let refreshJob = null;
+
+export function cloudState() {
+  return {
+    user: auth ? { uid: auth.uid, email: auth.email } : null,
+    signingIn, access, error: lastError, syncing: !!flushJob, pending: pendingCount(),
+  };
+}
+
+function notify() {
+  const state = cloudState();
+  for (const listener of listeners) listener(state);
+}
+
+export function subscribeCloud(listener) {
+  listeners.add(listener);
+  listener(cloudState());
+  return () => listeners.delete(listener);
+}
+
+function authMessage(code) {
+  if (['INVALID_LOGIN_CREDENTIALS', 'INVALID_PASSWORD', 'EMAIL_NOT_FOUND', 'INVALID_EMAIL'].includes(code)) {
+    return 'Email hoặc mật khẩu ứng dụng chưa đúng.';
+  }
+  if (code === 'TOO_MANY_ATTEMPTS_TRY_LATER') return 'Firebase tạm giới hạn đăng nhập. Hãy thử lại sau.';
+  if (code === 'USER_DISABLED') return 'Tài khoản ứng dụng đã bị vô hiệu hóa.';
+  if (code === 'OPERATION_NOT_ALLOWED') return 'Email/Mật khẩu chưa được bật trong Firebase Authentication.';
+  return 'Không thể xác thực với Firebase. Kiểm tra cấu hình hoặc đăng nhập lại.';
+}
+
+async function requestJson(url, options, version) {
+  const controller = new AbortController();
+  requests.add(controller);
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    const body = await res.json();
+    if (version !== authVersion) throw new Error('Phiên đăng nhập đã thay đổi.');
+    if (!res.ok) {
+      const error = new Error(url.startsWith(FB_BASE)
+        ? (res.status === 403
+          ? 'Firebase từ chối quyền truy cập. Kiểm tra tài khoản có trong members và luật Firestore.'
+          : res.status === 401 ? 'Phiên đăng nhập hết hiệu lực. Hãy đăng nhập lại.'
+            : 'Firebase chưa nhận được yêu cầu. Hãy thử đồng bộ lại.')
+        : authMessage(body.error?.message));
+      error.status = res.status;
+      error.code = body.error?.message;
+      throw error;
+    }
+    return body;
+  } catch (error) {
+    if (error instanceof TypeError || error.name === 'AbortError' || error instanceof SyntaxError) {
+      throw new Error('Không kết nối được Firebase. Dữ liệu đã lưu trên máy vẫn được giữ.');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    requests.delete(controller);
+  }
+}
+
+export function signOut() {
+  authVersion++;
+  for (const controller of requests) controller.abort();
+  auth = null;
+  refreshJob = null;
+  signingIn = false;
+  access = 'unchecked';
+  lastError = '';
+  notify();
+}
+
+export async function signIn(email, password) {
+  if (signingIn || auth) return;
+  const version = ++authVersion;
+  signingIn = true;
+  lastError = '';
+  notify();
+  try {
+    const data = await requestJson('https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=' + FB_KEY, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: email.trim(), password, returnSecureToken: true }),
+    }, version);
+    // Tokens stay in memory only; reopening the app requires a new sign-in.
+    auth = {
+      uid: data.localId, email: data.email, token: data.idToken, refresh: data.refreshToken,
+      expires: Date.now() + Number(data.expiresIn) * 1000,
+    };
+    await verifyAccess(version);
+  } catch (error) {
+    if (version === authVersion) lastError = error.message;
+  } finally {
+    if (version === authVersion) { signingIn = false; notify(); }
+  }
+  if (version === authVersion && access === 'allowed') void flush();
+}
+
+async function idToken(version) {
+  if (!auth || version !== authVersion) throw new Error('Hãy đăng nhập trong app để đồng bộ.');
+  if (auth.expires > Date.now() + 60000) return auth.token;
+  if (!refreshJob) {
+    const session = auth;
+    const job = requestJson('https://securetoken.googleapis.com/v1/token?key=' + FB_KEY, {
+      method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: session.refresh }).toString(),
+    }, version).then((data) => {
+      if (version !== authVersion || data.user_id !== session.uid) throw new Error('Phiên đăng nhập đã thay đổi.');
+      auth = { ...session, token: data.id_token, refresh: data.refresh_token,
+        expires: Date.now() + Number(data.expires_in) * 1000 };
+      return auth.token;
+    }).catch((error) => {
+      if (version === authVersion && [400, 401, 403].includes(error.status)) {
+        signOut();
+        lastError = 'Phiên đăng nhập hết hiệu lực. Hãy đăng nhập lại; dữ liệu chờ vẫn ở máy.';
+        notify();
+      }
+      throw error;
+    }).finally(() => { if (refreshJob === job) refreshJob = null; });
+    refreshJob = job;
+  }
+  return refreshJob;
+}
+
+async function firestore(path, options, version) {
+  const token = await idToken(version);
+  if (version !== authVersion) throw new Error('Phiên đăng nhập đã thay đổi.');
+  try {
+    return await requestJson(FB_BASE + path, {
+      ...options, headers: { 'content-type': 'application/json', Authorization: 'Bearer ' + token },
+    }, version);
+  } catch (error) {
+    if (version === authVersion) {
+      if (error.status === 403) access = 'denied';
+      if (error.status === 401) signOut();
+      lastError = error.message;
+      notify();
+    }
+    throw error;
+  }
+}
+
+async function verifyAccess(version) {
+  await firestore(':runQuery', {
+    method: 'POST', body: JSON.stringify({ structuredQuery: {
+      from: [{ collectionId: 'sessions' }], select: { fields: [{ fieldPath: '__name__' }] }, limit: 1,
+    } }),
+  }, version);
+  if (version === authVersion) { access = 'allowed'; lastError = ''; notify(); }
+}
 
 export function sanitize(studentId) {
   return String(studentId).replace(/[^A-Za-z0-9_-]/g, '-');
@@ -137,90 +280,107 @@ function fromValue(v) {
   return null;
 }
 
-// PATCH is create-or-replace, so a session re-sent from the queue lands on its own doc again instead
-// of duplicating the run.
-async function post(rec) {
+async function post(rec, version) {
   const fields = {};
   for (const k of Object.keys(rec.payload)) fields[k] = toValue(rec.payload[k]);
-  const res = await fetch(FB_BASE + '/sessions/' + encodeURIComponent(rec.doc), {
-    method: 'PATCH',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ fields }),
-  });
-  return isJson(res);
+  return firestore('/sessions/' + encodeURIComponent(rec.doc), {
+    method: 'PATCH', body: JSON.stringify({ fields }),
+  }, version);
 }
 
-function isJson(res) {
-  if (!res.ok) return false;
-  const ct = res.headers.get('content-type') || '';
-  return ct.includes('application/json');
-}
-
-/** Queue one finished session and try to drain. Never throws, never blocks the caller. */
-export function queueSession(record) {
-  const rec = { doc: record.doc, payload: record.payload };
-  const list = readQueue().filter((p) => p.doc !== rec.doc);
-  list.push(rec);
-  while (list.length > QUEUE_MAX) list.shift();
-  writeQueue(list);
-  flush().catch(() => {});
-  return list.length;
-}
-
-/** Send everything waiting; drops what the server accepted, keeps the rest for next time. */
-export async function flush() {
-  const list = readQueue();
-  if (!list.length) return { sent: 0, left: 0 };
-  const kept = [];
-  let sent = 0;
-  for (const rec of list) {
-    try {
-      if (await post(rec)) sent += 1;
-      else kept.push(rec);
-    } catch {
-      kept.push(rec);
-    }
-  }
-  writeQueue(kept);
-  return { sent, left: kept.length };
-}
-
-/** Read one child's rows back from the shared store; [] when the store is unreachable. */
-export async function fetchSessions(studentId) {
+export async function queueSession(record) {
+  const rec = { doc: record.doc, payload: record.payload, uid: auth?.uid || null, revision: crypto.randomUUID() };
   try {
-    const res = await fetch(FB_BASE + '/sessions:runQuery', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        structuredQuery: {
-          from: [{ collectionId: 'sessions' }],
-          where: {
-            fieldFilter: {
-              field: { fieldPath: 'student_id' },
-              op: 'EQUAL',
-              value: { stringValue: String(studentId) },
-            },
-          },
-          orderBy: [{ field: { fieldPath: 'ended_at_wall_ms' }, direction: 'DESCENDING' }],
-        },
-      }),
+    await navigator.locks.request(QUEUE_KEY, () => {
+      const list = readQueue().filter((p) => p.doc !== rec.doc || (p.uid || null) !== rec.uid);
+      if (list.length >= QUEUE_MAX) throw new Error('Hàng đợi đã đủ 50 phiên. Hãy đồng bộ và xuất hồ sơ để sao lưu phiên mới.');
+      list.push(rec);
+      if (!writeQueue(list)) throw new Error('Không lưu được hàng đợi trên máy. Hãy xuất hồ sơ để sao lưu.');
     });
-    if (!isJson(res)) return [];
-    const body = await res.json();
-    if (!Array.isArray(body)) return [];
-    return body.filter((r) => r && r.document).map((r) => {
-      const out = {};
-      const fields = r.document.fields || {};
-      for (const k of Object.keys(fields)) out[k] = fromValue(fields[k]);
-      return out;
-    });
-  } catch {
-    return [];
+    if (flushJob) void flushJob.then(() => flush());
+    else void flush();
+  } catch (error) {
+    lastError = error.message;
+  }
+  notify();
+  return pendingCount();
+}
+
+export function flush() {
+  if (flushJob) return flushJob;
+  if (!auth || access !== 'allowed') return Promise.resolve({ sent: 0, left: pendingCount() });
+  const version = authVersion;
+  const uid = auth.uid;
+  // One uploader per origin prevents a second window from overwriting a newer server revision.
+  flushJob = navigator.locks.request(QUEUE_KEY + '_sync', async () => {
+    let sent = 0;
+    if (version === authVersion) lastError = '';
+    notify();
+    while (version === authVersion && access === 'allowed') {
+      try {
+        const rec = await navigator.locks.request(QUEUE_KEY, () => {
+          if (version !== authVersion) return null;
+          const list = readQueue();
+          const next = list.find((r) => !r.uid || r.uid === uid);
+          // Unassigned offline records bind to the first member who syncs this device.
+          if (next && !next.uid) {
+            next.uid = uid;
+            if (!writeQueue(list)) throw new Error('Không cập nhật được hàng đợi trên máy.');
+          }
+          return next;
+        });
+        if (!rec || version !== authVersion) break;
+        const snapshot = JSON.stringify(rec);
+        await post(rec, version);
+        if (version !== authVersion) break;
+        await navigator.locks.request(QUEUE_KEY, () => {
+          // A recording may arrive during PATCH; only remove the acknowledged revision.
+          const remaining = readQueue().filter((r) => JSON.stringify(r) !== snapshot);
+          if (!writeQueue(remaining)) throw new Error('Đã gửi nhưng chưa cập nhật được hàng đợi trên máy.');
+        });
+        sent++;
+        notify();
+      } catch (error) {
+        if (version === authVersion) lastError = error.message;
+        break;
+      }
+    }
+    return { sent, left: pendingCount() };
+  }).finally(() => { flushJob = null; notify(); });
+  notify();
+  return flushJob;
+}
+
+export async function syncNow() {
+  const version = authVersion;
+  try {
+    await verifyAccess(version);
+    return await flush();
+  } catch (error) {
+    if (version === authVersion) { lastError = error.message; notify(); }
+    return { sent: 0, left: pendingCount() };
   }
 }
 
-// Leftovers from an offline day drain as soon as the machine is back, not only at the next Dừng.
+export async function fetchSessions(studentId) {
+  const body = await firestore(':runQuery', {
+    method: 'POST',
+    body: JSON.stringify({ structuredQuery: {
+      from: [{ collectionId: 'sessions' }],
+      where: { fieldFilter: {
+        field: { fieldPath: 'student_id' }, op: 'EQUAL', value: { stringValue: String(studentId) },
+      } },
+    } }),
+  }, authVersion);
+  return body.filter((r) => r && r.document).map((r) => {
+    const out = {};
+    const fields = r.document.fields || {};
+    for (const k of Object.keys(fields)) out[k] = fromValue(fields[k]);
+    return out;
+  }).sort((a, b) => (b.ended_at_wall_ms || 0) - (a.ended_at_wall_ms || 0));
+}
+
 if (typeof window !== 'undefined') {
-  window.addEventListener('online', () => { flush().catch(() => {}); });
-  flush().catch(() => {});
+  window.addEventListener('online', () => { if (auth) void syncNow(); });
+  window.addEventListener('storage', (event) => { if (event.key === QUEUE_KEY) notify(); });
 }
