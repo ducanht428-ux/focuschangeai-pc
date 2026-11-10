@@ -69,7 +69,8 @@ function makePage(three) {
   const C = { GRAY: [136, 136, 136], HINT_AMBER: [255, 160, 0], PRIMARY: [102, 80, 164],
     SEI_GOOD: [46, 125, 50], ALERT_ORANGE: [239, 108, 0] };
   const rowY = (y) => Math.max(0, Math.min(y, cv.height - 24));
-  const seen = { plates: [], binds: [], logs: [], stats: [], sessions: [], saved: [], uncal: false };
+  const seen = { plates: [], binds: [], logs: [], stats: [], sessions: [], saved: [], uploads: [],
+    uncal: false };
   const faceM = new FaceMatcher();
   for (let i = 0; i < 6; i++) faceM.addSample('hs1', faceSignature(mesh(A)));
   for (let i = 0; i < 6; i++) faceM.addSample('hs2', faceSignature(mesh(B)));
@@ -141,6 +142,7 @@ function makePage(three) {
     'bindStudent', 'faceM', 'assignFaces', 'faceSignature', 'faceGate', 'IDENTITY', 'saveFace', 'seen',
     'MonitorSession', 'loadProfile', 'toHud', 'alertSentence', 'contextNearby', 'sensLevel',
     'persistProfile', 'HABIT_AUTOSAVE_MS', 'PEER_GONE_MS',
+    'queueSession', 'cloudDocId', 'buildSessionPayload',
     `let idStatus = null, faceLabels = null, absentSinceMs = 0, lastGapMs = 0, seatArmed = true,
          lastSwitchMs = 0, learningId = null, idAtMs = 0, autoIdOn = true, recPeersOn = true,
          measureIdx = 0, boxes = null, faceRows = null, peerAlerts = null, peerSessions = new Map(),
@@ -185,7 +187,12 @@ function makePage(three) {
     faceM, assignFaces, faceSignature, faceGate, IDENTITY,
     (id, list) => { seen.faces = list; return true; }, seen,
     FakeSession, loadProfile, toHud, alertSentence, contextNearby, 1,
-    (p) => seen.saved.push(p.id), 30000, 20000);
+    (p) => seen.saved.push(p.id), 30000, 20000,
+    // The shared-store upload is the real cloud.mjs in the browser; here it is recorded so a test can
+    // assert a closed sitting actually produced a row, without any network.
+    (rec) => seen.uploads.push(rec),
+    (id, sid) => id + '-web-' + sid,
+    (o) => ({ student_id: o.studentId, session_id: o.summary && o.summary.id }));
 }
 
 // --- 1. two heads, two names, no switching --------------------------------------------------

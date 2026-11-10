@@ -572,6 +572,7 @@ import { FaceMatcher, IDENTITY, faceSignature, faceGate, assignFaces } from './j
 import { BREAK_DETECT_MS } from './js/params.mjs';
 import { addStudent, clearFace, clearProfile, currentId, exportBundle, faceRoster, importBundle,
   loadProfile, nameOf, saveFace, saveProfile, setCurrent, students } from './js/store.mjs';
+import { buildSessionPayload, documentId as cloudDocId, queueSession } from './js/cloud.mjs';
 
 const $ = (id) => document.getElementById(id);
 const cv = $('view');
@@ -663,10 +664,18 @@ function readyLine() {
 function commitHabit(closing) {
   if (!bound) return;
   const wasReady = bound.isReady();
+  const bandOutcomes = closing && session.habitSession ? session.habitSession.bandOutcomes() : null;
   const out = closing ? session.endHabitSession() : session.saveHabitSession();
   if (!out) return;
   if (out.changed) persistProfile(bound);
   if (closing) {
+    queueSession({
+      doc: cloudDocId(bound.id, out.summary.id),
+      payload: buildSessionPayload({
+        studentId: bound.id, studentName: bound.name, summary: out.summary, bandOutcomes,
+        endedAtWallMs: Date.now(), ineligibleReason: out.reason || null,
+      }),
+    });
     const min = (out.summary.validMs / 60000).toFixed(1);
     log(out.reason
       ? 'Không học phiên này: ' + out.reason + ' (' + min + ' phút hợp lệ). Hồ sơ giữ '
@@ -940,11 +949,23 @@ function multiTick(faces, sigs, gates) {
  */
 function commitPeer(peer, closing, t) {
   const p = peer.s.profile;
+  // The band counters live on the run that is about to be closed and endHabitSession() drops it, so they
+  // are read first or the shared row would arrive without its band columns.
+  const bandOutcomes = closing && peer.s.habitSession ? peer.s.habitSession.bandOutcomes() : null;
   const out = closing ? peer.s.endHabitSession() : peer.s.saveHabitSession();
   peer.saveAt = t;
   if (!p || !out) return;
   if (out.changed) persistProfile(p);
   if (closing) {
+    // The phone uploads its session to Firestore at this same moment; this is the web leg's copy of that
+    // upload, queued so a missing network costs the row a retry, never the recording.
+    queueSession({
+      doc: cloudDocId(p.id, out.summary.id),
+      payload: buildSessionPayload({
+        studentId: p.id, studentName: p.name, summary: out.summary, bandOutcomes,
+        endedAtWallMs: Date.now(), ineligibleReason: out.reason || null,
+      }),
+    });
     const min = (out.summary.validMs / 60000).toFixed(1);
     log(out.reason
       ? 'Không học phiên của "' + p.name + '": ' + out.reason + ' (' + min
