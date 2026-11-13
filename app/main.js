@@ -7,7 +7,7 @@
 // The port is chosen by the OS (port 0) so a second copy, or the launcher already using 8731, cannot
 // collide with us.
 
-const { app, BrowserWindow, session, shell, systemPreferences } = require('electron');
+const { app, BrowserWindow, ipcMain, session, shell, systemPreferences } = require('electron');
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
@@ -198,7 +198,7 @@ async function createWindow(port) {
     height: 900,
     minWidth: 900,
     minHeight: 640,
-    title: 'FocusChangeAI PC',
+    title: 'Phần mềm theo dõi trạng thái học sinh',
     icon: path.join(DIST, 'icons', 'icon-512.png'),
     autoHideMenuBar: true,
     backgroundColor: '#fffbfe',
@@ -206,6 +206,7 @@ async function createWindow(port) {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      preload: path.join(__dirname, 'preload.js'),
       spellcheck: false,
       devTools: !app.isPackaged || process.env.FC_DEVTOOLS === '1',
     },
@@ -275,6 +276,39 @@ app.whenReady().then(async () => {
   session.defaultSession.on('permission-check-complete', (e, permission, status) => {
     dlog('check permission=' + permission + ' status=' + status);
   });
+
+  // The ten-table database lives in userData, beside the app's own settings - never in dist/, which
+  // an update overwrites. The page exports the whole sql.js file and hands it over; the write is
+  // tmp+rename so a quit mid-save cannot leave half a database. Only our own loopback page may call
+  // these, and the path is ours to choose: the renderer sends bytes, never a destination.
+  const DB_FILE = path.join(app.getPath('userData'), 'focuschange.db');
+  const dbOwn = (e) => {
+    try {
+      return new URL(e.senderFrame.url).origin === ourOrigin;
+    } catch (err) {
+      return false;
+    }
+  };
+  ipcMain.handle('fc-db-save', (e, bytes) => {
+    if (!dbOwn(e)) throw new Error('forbidden');
+    const buf = Buffer.from(bytes);
+    // A classroom database is a few hundred KB; anything past this is a bug or an attack, not data.
+    if (buf.length === 0 || buf.length > 64 * 1024 * 1024) throw new Error('bad size ' + buf.length);
+    const tmp = DB_FILE + '.tmp';
+    fs.writeFileSync(tmp, buf);
+    fs.renameSync(tmp, DB_FILE);
+    dlog('db saved bytes=' + buf.length);
+    return { ok: true, bytes: buf.length, path: DB_FILE };
+  });
+  ipcMain.handle('fc-db-load', (e) => {
+    if (!dbOwn(e)) throw new Error('forbidden');
+    try {
+      return new Uint8Array(fs.readFileSync(DB_FILE));
+    } catch (err) {
+      return null;
+    }
+  });
+  ipcMain.handle('fc-db-path', (e) => (dbOwn(e) ? DB_FILE : ''));
 
   // Started, not awaited: the window must come up at once, and /update-info replies "checking" until this
   // lands, which the page retries for a few seconds.

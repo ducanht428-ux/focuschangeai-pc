@@ -95,8 +95,12 @@ const learned = mY.match(faceSignature(yawed));
 console.log('same frame after 4 yaw samples:      id=' + learned.id + ' d=' + learned.dist.toFixed(3)
   + ' r=' + learned.radius.toFixed(3) + ' ok=' + learned.ok);
 
-const v = [mY.vote('hs1'), mY.vote('hs1'), mY.vote('hs1')];
-check('vote switches only on the third frame', v, (a) => a[0] === null && a[1] === null && a[2] === 'hs1');
+// The bar is IDENTITY.NEED frames, whatever that number currently is: a test hard-coded to three would
+// pass a build that switched after two and fail one that correctly waits longer.
+const votes = [];
+for (let i = 0; i < IDENTITY.NEED + 1; i++) votes.push(mY.vote('hs1'));
+check('vote switches exactly on the NEED-th frame and not one earlier', votes,
+  (a) => a.slice(0, IDENTITY.NEED - 1).every((x) => x === null) && a[IDENTITY.NEED - 1] === 'hs1');
 mY.vote('hs2');
 check('a different face restarts the count', mY.vote('hs1'), null);
 
@@ -138,6 +142,40 @@ check('empty bank names nobody', unknown.every((r) => r.id === null && r.cands.l
 const half = assignFaces([faceSignature(mesh(A, -0.16)), null], m3);
 check('a head too small to signature is left unnamed', half[1].id === null && half[1].cands.length === 0, true);
 check('the readable head is still named', half[0].id, (a) => a === 'hs1');
+
+// --- 5b. which bar a refusal fell at --------------------------------------------------------
+// The two bars mean different things at the desk. 'radius' is "this face is not in the bank" - a
+// stranger, or a child who needs "Học mặt" again. 'margin' is "this face is as much one classmate as the
+// other" - a pair enrolled too loosely to be told apart, which no amount of the child sitting straighter
+// fixes. Both refuse the name now instead of printing the closer guess, and that is the change that was
+// asked for: MIX below used to be named hs1, because it sat inside hs1's radius and nothing else was
+// checked.
+const MIX = Object.fromEntries(Object.keys(A).map((k) => [k, (A[k] + B[k]) / 2]));
+const mTwo = new FaceMatcher();
+for (let i = 0; i < 6; i++) {
+  mTwo.addSample('hs1', faceSignature(mesh(A, -0.004 * i)));
+  mTwo.addSample('hs2', faceSignature(mesh(B, 0.004 * i)));
+}
+const tied = assignFaces([faceSignature(mesh(MIX))], mTwo)[0];
+check('a face halfway between two enrolled classmates is named as neither', tied.id, null);
+check('and says the bar it missed', tied.why, 'margin');
+check('the runner-up really is within the margin, not beyond it', tied.lead,
+  (a) => a > 1 && a < IDENTITY.MARGIN);
+check('MIX sits inside hs1 radius, so the lead alone is what refuses it', tied.inside, true);
+const stranger = assignFaces([faceSignature(mesh(C3))], mTwo)[0];
+check('a stranger outside every radius is unnamed', stranger.id, null);
+check('and says it missed the radius, not the lead', stranger.why, 'radius');
+check('the two enrolled heads themselves still clear both bars',
+  assignFaces([faceSignature(mesh(A)), faceSignature(mesh(B))], mTwo).map((r) => r.id).join(','),
+  'hs1,hs2');
+
+// Those six samples per student are six copies of the same signature: an offset is invisible to a
+// translation-invariant measure, so this is not a quiet camera, it is float rounding, and dividing by it
+// invents a scale. Measured before the guard, the 0.364 between the two synthetic faces came out as 1.146
+// in that bank - three times stricter than the units R_FLOOR was tuned in, for arithmetic reasons.
+check('a bank of identical samples is not read as measured noise', mTwo.weightsActive(), false);
+check('so the distance keeps its plain units',
+  mTwo.gdist(faceSignature(mesh(A)), faceSignature(mesh(B))), (a) => Math.abs(a - 0.3643) < 0.001);
 
 // --- 6. per-dimension weights ---------------------------------------------------------------
 // Two faces that differ in the dimensions a mesh measures stably (nose length, mouth width) and a

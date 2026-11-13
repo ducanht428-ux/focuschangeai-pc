@@ -1,6 +1,6 @@
 {
-  "name": "FocusChangeAI - Đo tập trung qua webcam",
-  "short_name": "FocusChangeAI",
+  "name": "Phần mềm theo dõi trạng thái học sinh",
+  "short_name": "Theo dõi HS",
   "description": "Đo sự tập trung của học sinh qua webcam, chạy hoàn toàn trên máy tính của lớp học.",
   "lang": "vi",
   "id": "./",

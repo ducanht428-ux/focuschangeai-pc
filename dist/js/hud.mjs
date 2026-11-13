@@ -90,8 +90,8 @@ export const DOT = {
 };
 
 export const PRIVACY_NOTE = 'Mọi phép đo chạy trên máy này; app không lưu ảnh, không lưu video. '
-  + 'Khi đăng nhập tài khoản thành viên, app gửi mã, tên học sinh và kết quả phiên đo lên Firebase dùng chung. '
-  + 'Hồ sơ và mặt đã học vẫn lưu trên máy; dùng "Xuất danh sách" để sao lưu hoặc mang sang máy khác.';
+  + 'Hồ sơ và điểm đo chỉ lưu trên máy này, app không gửi chúng đi đâu; '
+  + 'muốn mang sang máy khác dùng "Xuất danh sách".';
 
 /**
  * Format a number the way the phone does, or print its dash when there is none.
@@ -136,6 +136,23 @@ export function fatigueLabel(index) {
   if (index < 50) return 'Hơi mệt';
   if (index < 75) return 'Mệt';
   return 'Rất mệt';
+}
+
+// One line per recognised child, so several kids in one frame each keep their own numbers on screen at
+// the same time instead of only the head the column happens to measure. Uncalibrated SEI stays a
+// calibration count, never a fabricated score; geometry (EAR, angles) is still printed because the
+// landmark pass measured it even before the baseline is earned.
+export function kidLine(name, h) {
+  if (!h) return name + ' · chưa có số liệu (chưa hiệu chuẩn)';
+  const sei = h.sei;
+  const seiTxt = (sei === null || sei === undefined)
+    ? 'đang hiệu chuẩn ' + (h.calibProgress || 0) + '/' + (h.calibTotal || 60)
+    : Math.round(sei) + ' (' + seiLabel(sei) + ')';
+  const ear = (v) => (v === null || v === undefined || !Number.isFinite(v)) ? '--' : v.toFixed(3);
+  const deg = (v) => (v === null || v === undefined || !Number.isFinite(v)) ? '--' : (v >= 0 ? '+' : '') + Math.round(v);
+  const alert = alertSentence(h.alertMessage, h.personalSeiMean, h.qualityNote) || 'không cảnh báo';
+  return name + ' · SEI ' + seiTxt + ' · EAR ' + ear(h.ear1) + '/' + ear(h.ear2)
+    + ' · Yaw ' + deg(h.yaw) + '° Pitch ' + deg(h.pitch) + '° · ' + alert;
 }
 
 // ---------------------------------------------------------------------------
@@ -419,8 +436,11 @@ function line(text, size, colour, bold) {
  * @param {{gazeH:number, gazeV:number}} thr the session's own drift gates.
  * @param {string|null} imgProc the frame's image-enhancement state, as enhance.mjs describes it. The
  *   page passes it; the parity checker does not, so the recorded Python fixture keeps its dash.
+ * @param {object|null} cls the classroom-context snapshot from context.mjs ({label, evidence, ...}).
+ *   Optional on purpose: the parity checker and any caller that has no context layer gets the phone's
+ *   own "not measured" dash rather than a guess.
  */
-export function hudLines(h, faceCount, processingMs, fps, thr, imgProc) {
+export function hudLines(h, faceCount, processingMs, fps, thr, imgProc, cls) {
   const calibrated = !!h && h.calibrated;
   const out = [];
   const add = (l) => out.push(l);
@@ -505,6 +525,16 @@ export function hudLines(h, faceCount, processingMs, fps, thr, imgProc) {
   add(line(`Tư thế đầu: ${headPoseText(h)}`));
   add(line(`Hướng nhìn: ${gazeStatus(h, thr ? thr.gazeH : 0.16, thr ? thr.gazeV : 0.22)}`));
   add(line(`Tình huống: ${sitText}`));
+  // The classroom label is this leg's own layer, so there is no phone row to copy: the phone scores one
+  // student per sitting and never names what the room is doing. The dash is what a caller with no
+  // context layer prints, and the second line carries the numbers an operator needs to argue with the
+  // label - plus the one sentence that must stay attached to it, that these are hand-written rules and
+  // no accuracy has ever been measured for them.
+  add(line(cls ? `Hoạt động lớp: ${cls.label}` : 'Hoạt động lớp: --', TITLE_M,
+    cls ? C.PRIMARY : C.GRAY));
+  if (cls) {
+    add(line(`${cls.evidence} · luật viết tay, chưa kiểm định bằng dữ liệu có nhãn`, SMALL, C.GRAY));
+  }
   add(line(`Vi biểu cảm: ${expressionStatus(h)}`));
   if (h && Number.isFinite(h.mar) && Number.isFinite(h.bfr)) {
     add(line(`Chỉ số: BFR ${num(h.bfr, '%.2f')} | MAR ${num(h.mar, '%.2f')} | Ngáp (5 phút): ${h.yawnsRecent}`));

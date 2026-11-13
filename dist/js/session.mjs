@@ -282,7 +282,9 @@ export class MonitorSession {
     if (!p || !s) return null;
     const summary = s.toSummary();
     const reason = p.ineligibleReason(summary);
-    return { changed: p.commit(summary), reason, summary };
+    // bandOutcomes rides along for the SQLite writer: the per-feature band tallies live on the
+    // accumulator, not in the summary, and the closing commit is the only place they are read.
+    return { changed: p.commit(summary), reason, summary, bandOutcomes: s.bandOutcomes() };
   }
 
   /**

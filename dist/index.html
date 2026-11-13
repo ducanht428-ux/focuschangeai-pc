@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Bản chạy trên máy tính của FocusChangeAI: khung hình camera một bên, cột số liệu đúng như cửa sổ camera lớp và bản điện thoại ở bên kia, đo bằng cùng một thuật toán.">
+<meta name="description" content="Bản chạy trên máy tính của phần mềm theo dõi trạng thái học sinh: khung hình camera một bên, cột số liệu đúng như cửa sổ camera lớp và bản điện thoại ở bên kia, đo bằng cùng một thuật toán.">
 <meta name="theme-color" content="#6650a4">
 <!-- The manifest is what lets a school computer install this as an app instead of keeping a tab open.
      It costs nothing when the page is served from file://, where the browser ignores it. -->
 <link rel="manifest" href="manifest.json">
-<title>FocusChangeAI - Đo qua webcam trên máy tính</title>
+<title>Phần mềm theo dõi trạng thái học sinh</title>
 <style>
   /* Two arrangements from one set of blocks, because two different requests own this page.
      On a phone-shaped window the screen is the phone's screen: MainActivity's content is one Column on
@@ -83,16 +83,6 @@
   #log { font-family:Consolas, monospace; font-size:11px; white-space:pre-wrap; color:#5f5f5f;
          max-height:140px; overflow:auto; }
   #statline { font-size:12px; color:#5f5f5f; }
-  #cloudbox { border:1px solid #cac4d0; border-radius:12px; padding:12px; margin:8px 0; color:#1c1b1f; }
-  #cloudbox summary { cursor:pointer; font-size:14px; font-weight:600; }
-  #cloudbox p { margin:8px 0; line-height:1.5; }
-  #cloudform label { display:block; margin:8px 0; }
-  #cloudform input { display:block; box-sizing:border-box; width:100%; max-width:340px; margin-top:4px;
-                     font:inherit; font-size:14px; padding:9px 12px; border:1px solid #79747e; border-radius:8px; }
-  #clouderror { color:#b3261e; }
-  #cloudhistory { overflow-x:auto; }
-  #cloudhistory table { width:100%; border-collapse:collapse; margin-top:8px; }
-  #cloudhistory th, #cloudhistory td { text-align:left; padding:6px; border-bottom:1px solid #e7e0ec; }
 
   /* The two-column arrangement. It hangs off body.wide rather than straight off a media query because
      the class is set by one function that also honours ?split=1, so the operator can force the split in a
@@ -142,6 +132,116 @@
     #statline { font-size:14px; }
     #log { font-size:12px; }
   }
+  /* ---- Readable session report ("like Word"): a paper document over a scrim, print-friendly ---- */
+  #reportOverlay { position:fixed; inset:0; z-index:50; display:none; flex-direction:column;
+                   background:rgba(28,27,31,.55); }
+  #reportOverlay.open { display:flex; }
+  body.report-open { overflow:hidden; }
+  #reportToolbar { flex:0 0 auto; display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+                   padding:10px 16px; background:#fffbfe; border-bottom:1px solid rgba(28,27,31,.14);
+                   box-shadow:0 1px 6px rgba(28,27,31,.10); }
+  #reportToolbar .rp-toolbar-title { font-weight:600; color:#1c1b1f; margin-right:auto; font-size:14px; }
+  #reportToolbar .rp-pick-label { font-size:12px; color:#5f5f5f; }
+  #rpPick { font:inherit; font-size:13px; padding:8px 12px; border:1px solid rgba(28,27,31,.24);
+            border-radius:18px; background:#fffbfe; color:#1c1b1f; max-width:46vw; }
+  #reportToolbar button { font-size:13px; padding:8px 18px; min-height:0; border-radius:18px; }
+  #reportToolbar button.rp-ghost { background:transparent; color:#6650a4;
+                                   border:1px solid rgba(102,80,164,.5); }
+  #reportScroll { flex:1 1 auto; overflow-y:auto; padding:24px 16px 48px; display:flex;
+                  justify-content:center; align-items:flex-start;
+                  scrollbar-width:thin; scrollbar-color:#6650a4 rgba(102,80,164,.12); }
+  #reportScroll::-webkit-scrollbar { width:12px; }
+  #reportScroll::-webkit-scrollbar-track { background:rgba(102,80,164,.10); }
+  #reportScroll::-webkit-scrollbar-thumb { background:#6650a4; border-radius:8px;
+                  border:3px solid transparent; background-clip:padding-box; }
+  #reportScroll::-webkit-scrollbar-thumb:hover { background:#7a63b8; background-clip:padding-box; }
+  #rpPaper { width:100%; max-width:820px; background:#fff; color:#1c1b1f; border-radius:12px;
+             box-shadow:0 8px 40px rgba(28,27,31,.28); padding:44px 52px; box-sizing:border-box;
+             font-family:"Segoe UI", Roboto, Arial, sans-serif; line-height:1.55; font-size:14px; }
+  .rp-empty { color:#5f5f5f; text-align:center; padding:40px 0; }
+  .rp-head { border-bottom:3px solid #6650a4; padding-bottom:14px; margin-bottom:18px; }
+  .rp-kicker { font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:#6650a4;
+               font-weight:600; }
+  .rp-title { font-size:24px; line-height:1.2; margin:6px 0 10px; color:#1c1b1f; font-weight:700; }
+  .rp-student { font-size:20px; font-weight:600; color:#1c1b1f; }
+  .rp-class { font-size:13px; color:#5f5f5f; margin-top:2px; }
+  .rp-meta { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px 24px;
+             margin:0 0 16px; }
+  .rp-meta div { display:flex; flex-direction:column; }
+  .rp-meta span { font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:#8a8a8e; }
+  .rp-meta b { font-size:14px; color:#1c1b1f; font-weight:600; }
+  .rp-pill { display:inline-block; font-size:13px; font-weight:600; padding:7px 14px; border-radius:18px;
+             margin-bottom:18px; }
+  .rp-pill.ok { background:rgba(46,125,50,.12); color:#2e7d32; }
+  .rp-pill.warn { background:rgba(178,106,0,.14); color:#b26a00; }
+  .rp-sei { display:flex; align-items:center; gap:22px; padding:20px 24px; border-radius:14px;
+            background:linear-gradient(135deg, rgba(102,80,164,.12), rgba(102,80,164,.04));
+            border:1px solid rgba(102,80,164,.22); margin-bottom:18px; }
+  .rp-sei.empty { background:rgba(28,27,31,.04); border-color:rgba(28,27,31,.14); }
+  .rp-sei-num { font-size:52px; font-weight:700; color:#6650a4; line-height:1; white-space:nowrap; }
+  .rp-sei.empty .rp-sei-num { color:#8a8a8e; }
+  .rp-sei-num small { font-size:20px; font-weight:600; color:#8a8a8e; }
+  .rp-sei-side { display:flex; flex-direction:column; gap:3px; }
+  .rp-sei-side b { font-size:15px; color:#1c1b1f; }
+  .rp-sei-side span { font-size:12px; color:#5f5f5f; }
+  .rp-sei-scale { font-style:italic; }
+  .rp-stats { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-bottom:22px; }
+  .rp-stat { border:1px solid rgba(28,27,31,.12); border-radius:12px; padding:14px 16px;
+             display:flex; flex-direction:column; gap:2px; background:#fffbfe; }
+  .rp-stat b { font-size:22px; color:#6650a4; font-weight:700; }
+  .rp-stat span { font-size:12px; color:#5f5f5f; }
+  .rp-stat i { font-size:11px; color:#8a8a8e; font-style:normal; }
+  .rp-section-h { font-size:15px; font-weight:700; color:#1c1b1f; margin:22px 0 10px;
+                  padding-left:10px; border-left:4px solid #6650a4; }
+  .rp-table { width:100%; border-collapse:collapse; font-size:13px; margin-bottom:6px; }
+  .rp-table th { text-align:left; background:rgba(102,80,164,.10); color:#4a3a78; font-weight:600;
+                 padding:9px 12px; border-bottom:2px solid rgba(102,80,164,.3); }
+  .rp-table td { padding:8px 12px; border-bottom:1px solid rgba(28,27,31,.08); }
+  .rp-table tbody tr:nth-child(even) { background:rgba(102,80,164,.035); }
+  .rp-table td:nth-child(n+2), .rp-table th:nth-child(n+2) { text-align:right; white-space:nowrap; }
+  .rp-table u { text-decoration:none; color:#8a8a8e; font-size:11px; }
+  .rp-dev { font-style:normal; font-size:10px; color:#b26a00; background:rgba(178,106,0,.12);
+            padding:1px 6px; border-radius:8px; margin-left:4px; white-space:nowrap; }
+  .rp-remarks { margin:0 0 16px; padding-left:20px; }
+  .rp-remarks li { margin-bottom:7px; }
+  .rp-caveat { font-size:12px; color:#7a5a1e; background:rgba(178,106,0,.10);
+               border:1px solid rgba(178,106,0,.25); border-radius:10px; padding:12px 14px; margin:0 0 18px; }
+  .rp-foot { display:flex; flex-direction:column; gap:3px; border-top:1px solid rgba(28,27,31,.12);
+             padding-top:12px; font-size:11px; color:#8a8a8e; }
+  @media (prefers-reduced-motion: no-preference) {
+    #reportOverlay.open { animation:rpFade .18s ease; }
+    #reportOverlay.open #rpPaper { animation:rpRise .24s cubic-bezier(.2,.7,.2,1); }
+    @keyframes rpFade { from { opacity:0; } to { opacity:1; } }
+    @keyframes rpRise { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:none; } }
+  }
+  @media (max-width:560px) {
+    #rpPaper { padding:28px 22px; }
+    .rp-stats { grid-template-columns:1fr; }
+    .rp-sei { flex-direction:column; align-items:flex-start; gap:10px; }
+    .rp-title { font-size:21px; }
+    #reportToolbar button, #rpPick { min-height:44px; }
+    /* The nowrap numeric columns otherwise force the table wider than the paper on a phone. */
+    .rp-table { table-layout:fixed; font-size:12px; }
+    .rp-table th, .rp-table td { padding:6px 6px; white-space:normal; overflow-wrap:break-word; }
+    .rp-table th:first-child { width:38%; }
+    .rp-table td:nth-child(n+2), .rp-table th:nth-child(n+2) { white-space:normal; }
+    .rp-dev { white-space:normal; }
+  }
+  /* Print: show only the paper, hide the camera UI and the toolbar, let the document flow on pages. */
+  @media print {
+    body.report-open { overflow:visible !important; height:auto !important; }
+    body.report-open > #screen { display:none !important; }
+    body.report-open #reportOverlay { position:static !important; display:block !important;
+                                      background:#fff !important; }
+    body.report-open #reportToolbar { display:none !important; }
+    body.report-open #reportScroll { overflow:visible !important; display:block !important; padding:0 !important; }
+    body.report-open #rpPaper { box-shadow:none !important; border:0 !important; border-radius:0 !important;
+                                max-width:none !important; width:auto !important; margin:0 !important;
+                                padding:0 !important; animation:none !important; }
+    .rp-table tr, .rp-sei, .rp-stat, .rp-caveat { break-inside:avoid; }
+    .rp-section-h { break-after:avoid; }
+    @page { margin:16mm; }
+  }
 </style>
 </head>
 <body>
@@ -151,6 +251,10 @@
          SEI line, sparkline, then the warning rows. It does not scroll on the phone either. -->
     <div id="top"></div>
     <div id="hudwrap"><div id="hud"></div></div>
+    <div id="kidwrap" hidden style="margin:8px 0;padding:8px 10px;background:#fffbfe;border:1px solid rgba(28,27,31,.12);border-radius:12px;">
+      <div style="font-weight:600;color:#6650a4;font-size:13px;margin-bottom:4px;">Chỉ số từng em cùng khung</div>
+      <div id="kidrows" style="font-size:13px;color:#1c1b1f;"></div>
+    </div>
 
     <!-- Two of the phone's button rows have a browser equivalent that actually does something, so they
          are labelled and placed exactly as the phone places them (MainActivity.kt:1235-1246, :1895-1908).
@@ -202,10 +306,12 @@
   </div>
 
   <div id="camcol">
-    <!-- The five view switches as buttons. They used to exist only as the keys F Y O G H, which a phone
-         has no way to press. They sit directly ABOVE the picture, not below it, for one measured reason:
+    <!-- The view switches as buttons. They used to exist only as the keys F Y O G H, which a phone
+         has no way to press; N, which chooses the head the numbers column measures, got its button with
+         them. They sit directly ABOVE the picture, not below it, for one measured reason:
          at 412x915 the row under the camera ended past the fold and its second line of buttons was half
-         cut off, while here the whole row and the whole camera box both fit on the first screen.
+         cut off, while here the whole row and the whole camera box both fit on the first screen. That fit
+         was measured with five buttons; the sixth here has not been re-measured on a phone yet.
          The labels stop short of the wording in the line below; the long ones wrapped to a third line.
          P ("vì sao hơi lag", the per-stage millisecond breakdown) was removed on 2026-11-08 at the author's
          request, together with the perf timers that only it read. -->
@@ -215,6 +321,7 @@
       <button data-key="o" title="Phím O">Số liệu đè khung</button>
       <button data-key="g" title="Phím G">Tăng sáng</button>
       <button data-key="h" title="Phím H">Ẩn cột</button>
+      <button data-key="n" title="Phím N">Chọn em đo</button>
     </div>
 
     <div id="cambox"><canvas id="view" width="640" height="480" aria-label="Khung hình camera"></canvas></div>
@@ -225,29 +332,6 @@
         <button id="stop" disabled>Dừng</button>
         <button id="reload">Chạy lại với cài đặt trên</button>
       </div>
-      <details id="cloudbox" open>
-        <summary>Đồng bộ Firebase</summary>
-        <p id="cloudstatus" role="status" aria-live="polite">Chưa đăng nhập. Vẫn có thể ghi và lưu trên máy.</p>
-        <form id="cloudform" method="post">
-          <label for="cloudemail">Email tài khoản ứng dụng
-            <input id="cloudemail" type="email" autocomplete="username" required>
-          </label>
-          <label for="cloudpassword">Mật khẩu ứng dụng
-            <input id="cloudpassword" type="password" autocomplete="current-password" required>
-          </label>
-          <button id="cloudlogin" type="submit" disabled>Đăng nhập để đồng bộ</button>
-          <p>Dùng tài khoản đã tạo trong Firebase Authentication, không phải phiên đăng nhập trang quản lý Google. App không lưu mật khẩu; mở lại app cần đăng nhập lại.</p>
-        </form>
-        <div class="btnrow">
-          <button id="cloudsync" type="button" disabled>Đồng bộ ngay</button>
-          <button id="cloudread" type="button" disabled>Xem phiên của HS đang chọn</button>
-          <button id="cloudlogout" type="button" hidden>Đăng xuất</button>
-        </div>
-        <p id="cloudqueue"></p>
-        <p id="clouderror" role="alert" hidden></p>
-        <p>Phiên ghi khi chưa đăng nhập sẽ gửi bằng tài khoản thành viên đăng nhập tiếp theo trên máy này. Phiên đã gắn tài khoản khác sẽ chờ tài khoản đó. Thành viên có quyền xem dữ liệu chung; mã học sinh không phải mã tài khoản.</p>
-        <div id="cloudhistory" aria-live="polite"></div>
-      </details>
       <div class="btnrow">
         <label class="ctl">Bộ xử lý
           <select id="delegate"><option value="GPU">GPU (WebGL)</option><option value="CPU">CPU</option></select>
@@ -270,7 +354,7 @@
           <select id="rate"><option value="2">2 lần mỗi giây</option><option value="4">4 lần mỗi giây</option><option value="8">8 lần mỗi giây (bản Python)</option></select>
         </label>
       </div>
-      <div id="statline">Chưa mở camera. Bấm "Mở camera" rồi chọn "Cho phép" khi trình duyệt hỏi. Hàng nút ngay trên khung hình - Hộp mặt, Hộp người, Số liệu đè khung, Tăng sáng, Ẩn cột - bấm được trên điện thoại; trên máy tính thì dùng phím F Y O G H.</div>
+      <div id="statline">Chưa mở camera. Bấm "Mở camera" rồi chọn "Cho phép" khi trình duyệt hỏi. Hàng nút ngay trên khung hình - Hộp mặt, Hộp người, Số liệu đè khung, Tăng sáng, Ẩn cột, Chọn em đo - bấm được trên điện thoại; trên máy tính thì dùng phím F Y O G H và N.</div>
       <div class="btnrow">
         <span id="fps">--</span><span id="verdict">&nbsp;</span><span id="det"></span><span id="boost"></span><span id="rows"></span>
       </div>
@@ -302,6 +386,14 @@
            BUILD.json is written by the build scripts, never typed, so it cannot drift from the code. -->
       <div class="btnrow">
         <span id="buildline">Bản build: không đọc được BUILD.json.</span>
+      </div>
+      <!-- The ten-table SQLite file this leg writes beside the browser profiles - the same schema the
+           Python camera leg uses. The line says where the file lives and what it holds; the button hands
+           the whole file over, because a database nobody can carry away dies with the machine. -->
+      <div class="btnrow" id="sqlrow">
+        <span id="sqlline">SQLite: đang nạp…</span>
+        <button id="sqldl" hidden title="Tải toàn bộ tệp focuschange.db (10 bảng, cùng cấu trúc bản Python) về máy">Tải .db</button>
+        <button id="sqlreport" hidden title="Xem một phiên đã lưu dưới dạng báo cáo chữ, in hoặc lưu PDF">Xem báo cáo</button>
       </div>
       <!-- Filled in only by the standalone app, which answers /update-info from its own loopback server.
            A browser tab never asks, so this row never appears there. -->
@@ -524,8 +616,8 @@ function fillInstallHint() {
   const el = document.getElementById('installhint');
   if (!el) return;
   el.textContent = isTouch()
-    ? 'Chrome hoặc Safari sẽ thêm FocusChangeAI vào màn hình chính và mở thành cửa sổ riêng, chạy được cả khi mất mạng.'
-    : 'Chrome sẽ thêm FocusChangeAI vào Start Menu và mở thành cửa sổ riêng, chạy được cả khi mất mạng.';
+    ? 'Chrome hoặc Safari sẽ thêm phần mềm theo dõi trạng thái học sinh vào màn hình chính và mở thành cửa sổ riêng, chạy được cả khi mất mạng.'
+    : 'Chrome sẽ thêm phần mềm theo dõi trạng thái học sinh vào Start Menu và mở thành cửa sổ riêng, chạy được cả khi mất mạng.';
 }
 fillInstallHint();
 window.addEventListener('beforeinstallprompt', (e) => {
@@ -590,111 +682,23 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
 </script>
 
 <script type="module">
-import { cloudState, subscribeCloud, signIn, signOut, syncNow, fetchSessions } from './js/cloud.mjs';
-
-const el = (id) => document.getElementById(id);
-let historyRequest = 0;
-let reading = false;
-let syncing = false;
-let shownUid = null;
-function clearHistory() {
-  historyRequest++;
-  reading = false;
-  el('cloudhistory').replaceChildren();
-}
-function renderCloud(state) {
-  const uid = state.user?.uid || null;
-  if (uid !== shownUid || state.access !== 'allowed') { shownUid = uid; clearHistory(); }
-  el('cloudform').hidden = !!state.user;
-  el('cloudemail').disabled = state.signingIn;
-  el('cloudpassword').disabled = state.signingIn;
-  el('cloudlogin').disabled = state.signingIn;
-  el('cloudlogin').textContent = state.signingIn ? 'Đang đăng nhập…' : 'Đăng nhập để đồng bộ';
-  el('cloudlogout').hidden = !state.user && !state.signingIn;
-  el('cloudlogout').textContent = state.signingIn ? 'Hủy đăng nhập' : 'Đăng xuất';
-  el('cloudsync').disabled = !state.user || state.signingIn || state.syncing || syncing;
-  el('cloudsync').textContent = state.syncing || syncing ? 'Đang đồng bộ…' : 'Đồng bộ ngay';
-  el('cloudread').disabled = !state.user || state.access !== 'allowed' || reading || !el('student').value;
-  el('cloudstatus').textContent = state.user
-    ? 'Đã đăng nhập: ' + state.user.email + (state.access === 'allowed'
-      ? ' · Đã xác nhận quyền đọc dữ liệu chung.' : ' · Chưa xác nhận được quyền truy cập dữ liệu.')
-    : 'Chưa đăng nhập. Vẫn có thể ghi và lưu trên máy.';
-  el('cloudqueue').textContent = state.pending + ' phiên đang chờ gửi trên máy này (tối đa 50 phiên).';
-  el('clouderror').hidden = !state.error;
-  el('clouderror').textContent = state.error;
-}
-subscribeCloud(renderCloud);
-el('cloudform').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const password = el('cloudpassword').value;
-  el('cloudpassword').value = '';
-  await signIn(el('cloudemail').value, password);
-});
-el('cloudlogout').addEventListener('click', () => { signOut(); el('cloudpassword').value = ''; });
-el('cloudsync').addEventListener('click', async () => {
-  syncing = true;
-  renderCloud(cloudState());
-  try { await syncNow(); }
-  finally { syncing = false; renderCloud(cloudState()); }
-});
-el('student').addEventListener('change', () => { clearHistory(); renderCloud(cloudState()); });
-el('cloudread').addEventListener('click', async () => {
-  const studentId = el('student').value;
-  if (!studentId) return;
-  const request = ++historyRequest;
-  reading = true;
-  renderCloud(cloudState());
-  el('cloudhistory').textContent = 'Đang đọc phiên của ' + studentId + '…';
-  try {
-    const rows = await fetchSessions(studentId);
-    if (request !== historyRequest) return;
-    el('cloudhistory').replaceChildren();
-    const title = document.createElement('p');
-    title.textContent = rows.length + ' phiên trên Firebase của ' + studentId + '. Không thay thế hồ sơ đang lưu trên máy.';
-    el('cloudhistory').append(title);
-    if (rows.length) {
-      const table = document.createElement('table');
-      const head = table.createTHead().insertRow();
-      for (const label of ['Kết thúc', 'Nguồn', 'Phút hợp lệ', 'SEI']) {
-        const cell = document.createElement('th');
-        cell.scope = 'col'; cell.textContent = label; head.append(cell);
-      }
-      const body = table.createTBody();
-      for (const row of rows) {
-        const tr = body.insertRow();
-        const when = new Date(row.ended_at_wall_ms);
-        const values = [row.ended_at_wall_ms && !isNaN(when.getTime()) ? when.toLocaleString('vi-VN') : '—',
-          row.source || 'Không ghi nguồn',
-          Number.isFinite(row.valid_ms) ? (row.valid_ms / 60000).toFixed(1) : '—',
-          Number.isFinite(row.mean_sei) ? row.mean_sei.toFixed(1) : '—'];
-        for (const value of values) tr.insertCell().textContent = value;
-      }
-      el('cloudhistory').append(table);
-    }
-  } catch (error) {
-    if (request === historyRequest) el('cloudhistory').textContent = error.message;
-  } finally {
-    if (request === historyRequest) { reading = false; renderCloud(cloudState()); }
-  }
-});
-</script>
-
-<script type="module">
 import { FaceLandmarker, FilesetResolver, ObjectDetector } from './js/vision_bundle.mjs';
 import { MonitorSession, HABIT_AUTOSAVE_MS } from './js/session.mjs';
 import { readLight, faceRoi } from './js/measure.mjs';
 import { ImageEnhancer } from './js/enhance.mjs';
-import { CHART_ROW, C, DOT, EYE_DRAW, IRIS_FIRST, PHONE_TYPE, hudLines, rgb, seiColour, toHud } from './js/hud.mjs';
+import { CHART_ROW, C, DOT, EYE_DRAW, IRIS_FIRST, PHONE_TYPE, hudLines, kidLine, rgb, seiColour, toHud } from './js/hud.mjs';
 import { alertSentence } from './js/alerts.mjs';
 import { HC } from './js/habit.mjs';
 import { DETECT_CONF, DETECT_MAX_RESULTS, PersonIds, YOLO_FACE, YOLO_OBJECT, YOLO_PERSON, YOLO_TEXT,
   assignObjects, ownerOf, readBoxes, topNearby, vi } from './js/detect.mjs';
 import { loadYoloEngine } from './js/yolo.mjs';
 import { FaceMatcher, IDENTITY, faceSignature, faceGate, assignFaces } from './js/identity.mjs';
+import { CLASS_CONTEXT_VI, ClassContextEngine, CONTEXT_T, headSignals, roomObjects } from './js/context.mjs';
 import { BREAK_DETECT_MS } from './js/params.mjs';
 import { addStudent, clearFace, clearProfile, currentId, exportBundle, faceRoster, importBundle,
   loadProfile, nameOf, saveFace, saveProfile, setCurrent, students } from './js/store.mjs';
-import { buildSessionPayload, documentId as cloudDocId, queueSession } from './js/cloud.mjs';
+import { SqlStore } from './js/sqlstore.mjs';
+import { buildReportModel, reportHtml, fmtDateTime } from './js/report.mjs';
 
 const $ = (id) => document.getElementById(id);
 const cv = $('view');
@@ -711,6 +715,14 @@ const log = (m) => { $('log').textContent += m + '\n'; $('log').scrollTop = 1e9;
 
 const session = new MonitorSession();
 
+// The classroom activity label: seven names for what the room is doing, decided by the rules in
+// js/context.mjs from the meshes and boxes this page already produced. classSnap is the held label, not
+// the raw one - a child turning his head for a second must not rename the lesson - and classAtMs paces
+// the arithmetic to CONTEXT_T.SAMPLE_MS rather than the frame, because it runs per head on a two-core
+// laptop whose whole budget is 33 ms.
+const classEngine = new ClassContextEngine();
+let classSnap = null, classAtMs = 0;
+
 // The dark-classroom stage: the phone's own CLAHE + denoise controller, ported to the canvas.
 // enhanceAuto is its switch, the same one the phone has (auto on, off only by the operator).
 // lastPts is the previous frame's face box: the phone also decides its region from the box the last
@@ -726,6 +738,10 @@ let lastLight = null;
 // (faceLabels).
 let lastFaces = null;
 let measureIdx = 0;
+// Which head N parked the column on, or -1 while the page still chooses. An index into this frame's
+// face list, not a student id: the point of the key is to measure the child the operator can see,
+// whether or not the bank has ever learned that face.
+let measureLock = -1;
 let faceLabels = null;
 // The assignment rows behind those labels, kept so the peer pass below can tell which head belongs to
 // which student, and one MonitorSession per extra head.
@@ -739,6 +755,7 @@ let faceLabels = null;
 // takes for the whole frame, so the recording is not what this machine pays for.
 let faceRows = null;
 let peerAlerts = null;
+let kidSnap = [];
 const peerSessions = new Map();
 // A bystander who has been out of frame for this long has stopped sitting with us, so their run is
 // committed and closed and the next sitting calibrates again. It is the phone's own face-lost bar
@@ -760,10 +777,12 @@ let probeAtMs = -1e9;
  * of the way toward that student's own numbers, and the column starts quoting them.
  *
  * Where it lives matters more than how it works. The phone writes its profiles into app-private files and
- * can upload them to Firestore; this leg writes localStorage keys in this browser and nothing else. A
- * profile learned at the booth desk therefore never reaches the teacher's phone or the other machine, and
- * a run in an incognito window is forgotten when the window closes. Both are said out loud below rather
- * than left for the viewer to assume, because the screen otherwise looks like the phone.
+ * can upload them to Firestore; this leg writes localStorage keys in this browser plus one local SQLite
+ * file with the same ten tables the Python camera leg uses - the app's own userData folder when
+ * installed, this browser's IndexedDB when it is a tab. Nothing is sent anywhere. A profile learned at
+ * the booth desk therefore never reaches the teacher's phone or the other machine, and a run in an
+ * incognito window is forgotten when the window closes. Both are said out loud below rather than left
+ * for the viewer to assume, because the screen otherwise looks like the phone.
  */
 let bound = null;
 let habitSaveAtMs = 0;
@@ -786,18 +805,13 @@ function readyLine() {
 function commitHabit(closing) {
   if (!bound) return;
   const wasReady = bound.isReady();
-  const bandOutcomes = closing && session.habitSession ? session.habitSession.bandOutcomes() : null;
   const out = closing ? session.endHabitSession() : session.saveHabitSession();
   if (!out) return;
   if (out.changed) persistProfile(bound);
   if (closing) {
-    queueSession({
-      doc: cloudDocId(bound.id, out.summary.id),
-      payload: buildSessionPayload({
-        studentId: bound.id, studentName: bound.name, summary: out.summary, bandOutcomes,
-        endedAtWallMs: Date.now(), ineligibleReason: out.reason || null,
-      }),
-    });
+    // The database gets the CLOSING commit only - the same rule as the camera leg's retire path. The
+    // 30-second autosave keeps updating localStorage mid-sitting, but a half-sat run is not a record.
+    sqlWriteSession(bound, out, boundIdentity);
     const min = (out.summary.validMs / 60000).toFixed(1);
     log(out.reason
       ? 'Không học phiên này: ' + out.reason + ' (' + min + ' phút hợp lệ). Hồ sơ giữ '
@@ -807,6 +821,219 @@ function commitHabit(closing) {
   }
   if (!wasReady && bound.isReady()) log(readyLine());
 }
+
+// ---------------------------------------------------------------------------
+// The ten-table SQLite database (js/sqlstore.mjs holds the schema and the write rules)
+// ---------------------------------------------------------------------------
+// Two destinations, one file format. The installed app hands the bytes to main.js, which keeps them
+// at userData/focuschange.db beside its own settings; a browser tab keeps them in IndexedDB and the
+// "Tải .db" button is the way out. sql.js is loaded lazily here so a machine that never closes a
+// session never pays for the WASM, and every failure is survivable: the page keeps measuring and
+// learning into localStorage even when the database cannot open.
+let sqlStore = null;
+let sqlBytes = null;
+let sqlWhere = '';
+let sqlSaveFailed = false;
+// How the bound student was named: the camera's own vote ('face') or a human choice ('manual'). The
+// camera leg writes the same distinction into notes.identity, and a declared row must never read as
+// a recognised one.
+let boundIdentity = 'manual';
+const sqlPending = [];
+const SQL_DEVICE = navigator.platform || 'web';
+
+function loadScriptOnce(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('không nạp được ' + src));
+    document.head.appendChild(s);
+  });
+}
+
+// IndexedDB adapter for the browser shape. One object store, one key: the whole database file.
+const IDB_NAME = 'focuschangeai-sql';
+function idbOpen() {
+  return new Promise((resolve, reject) => {
+    const r = indexedDB.open(IDB_NAME, 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('db');
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error || new Error('IndexedDB'));
+  });
+}
+async function idbLoad() {
+  const d = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const q = d.transaction('db', 'readonly').objectStore('db').get('focuschange.db');
+    q.onsuccess = () => { d.close(); resolve(q.result ? new Uint8Array(q.result) : null); };
+    q.onerror = () => { d.close(); reject(q.error); };
+  });
+}
+async function idbSave(bytes) {
+  const d = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = d.transaction('db', 'readwrite');
+    tx.objectStore('db').put(bytes, 'focuschange.db');
+    tx.oncomplete = () => { d.close(); resolve(); };
+    tx.onerror = () => { d.close(); reject(tx.error); };
+  });
+}
+
+async function initSql() {
+  try {
+    await loadScriptOnce('sqljs/sql-wasm.js');
+    const SQL = await window.initSqlJs({ locateFile: (f) => 'sqljs/' + f });
+    let bytes = null;
+    if (window.fcDb) {
+      bytes = await window.fcDb.load();
+      sqlWhere = await window.fcDb.path();
+    } else {
+      bytes = await idbLoad();
+      sqlWhere = 'IndexedDB của trình duyệt này';
+    }
+    const db = bytes && bytes.length ? new SQL.Database(bytes) : new SQL.Database();
+    // The stamp, not a typed version: app_version must name the build that wrote the row.
+    let appVersion = '';
+    try {
+      const b = await (await fetch('BUILD.json', { cache: 'no-store' })).json();
+      if (b && b.code) appVersion = (b.builtAt || '') + ' ' + String(b.code).slice(0, 8);
+    } catch (e) { /* an offline copy without a stamp still writes rows */ }
+    sqlStore = new SqlStore(db, { source: window.fcDb ? 'pc-app' : 'pc-web', appVersion });
+    if (!sqlStore.enabled) throw new Error(sqlStore.lastError);
+    const c = sqlStore.counts();
+    log('SQLite: 10 bảng đã mở tại ' + sqlWhere + ' (' + c.observation_sessions + ' phiên có sẵn).'
+      + ' Mỗi phiên ĐÓNG (Dừng, đổi em, rời khung hình) được ghi vào đây, cùng cấu trúc bản Python.');
+    $('sqldl').hidden = false;
+    $('sqlreport').hidden = false;
+    updateSqlLine();
+    // Runs that closed while the engine was still loading are written now, under their own names.
+    for (const w of sqlPending.splice(0)) doSqlWrite(w.p, w.rec);
+  } catch (e) {
+    sqlStore = null;
+    const msg = String((e && e.message) || e);
+    $('sqlline').textContent = 'SQLite: không mở được (' + msg + ') - vẫn đo, không ghi db.';
+    log('SQLite không mở được: ' + msg + '. Số liệu vẫn đo và vẫn học vào hồ sơ, nhưng không ghi database.');
+  }
+}
+
+function updateSqlLine() {
+  const line = $('sqlline');
+  if (!line || !sqlStore) return;
+  const c = sqlStore.counts();
+  line.textContent = 'SQLite: ' + c.observation_sessions + ' phiên · ' + c.students + ' em · '
+    + c.baseline_profiles + ' mốc hồ sơ · '
+    + (sqlSaveFailed ? 'CHƯA lưu được xuống đĩa - bấm "Tải .db" để giữ' : sqlWhere);
+}
+
+/** Queue one closing commit for the database. p is the profile the run was measured under. */
+function sqlWriteSession(p, out, identity) {
+  if (!p || !out) return;
+  const rec = {
+    studentId: p.id, studentName: p.name, summary: out.summary,
+    bandOutcomes: out.bandOutcomes || [], endedAtWallMs: Date.now(),
+    device: SQL_DEVICE, ineligibleReason: out.reason, identity,
+  };
+  if (sqlStore) doSqlWrite(p, rec);
+  else sqlPending.push({ p, rec });
+}
+
+function doSqlWrite(p, rec) {
+  const okS = sqlStore.writeSession(rec);
+  // The baseline snapshot follows the session, same order as the camera leg's retire path; writeBand
+  // writes nothing while the profile has no learned bands yet, which is not a failure.
+  const okB = sqlStore.writeBand({ studentId: p.id, studentName: p.name, profile: p,
+    updatedAtWallMs: rec.endedAtWallMs, device: SQL_DEVICE });
+  if (!okS) log('SQLite không ghi được phiên của "' + p.name + '": ' + sqlStore.lastError);
+  if (okS || okB) sqlPersist();
+  updateSqlLine();
+}
+
+async function sqlPersist() {
+  if (!sqlStore) return;
+  sqlBytes = sqlStore.exportBytes();
+  try {
+    if (window.fcDb) await window.fcDb.save(sqlBytes);
+    else await idbSave(sqlBytes);
+    sqlSaveFailed = false;
+  } catch (e) {
+    if (!sqlSaveFailed) {
+      log('SQLite chưa lưu xuống đĩa được: ' + String((e && e.message) || e)
+        + ' - bản trong bộ nhớ vẫn còn, bấm "Tải .db" để giữ.');
+    }
+    sqlSaveFailed = true;
+  }
+  updateSqlLine();
+}
+
+$('sqldl').onclick = () => {
+  const bytes = sqlStore ? sqlStore.exportBytes() : sqlBytes;
+  if (!bytes || !bytes.length) { log('Chưa có database để tải.'); return; }
+  const url = URL.createObjectURL(new Blob([bytes], { type: 'application/x-sqlite3' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'focuschange.db';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 20000);
+  log('Đã tải focuschange.db (' + bytes.length + ' B) - cùng tệp 10 bảng mà bản Python đọc và ghi.');
+};
+
+// ---------------------------------------------------------------------------
+// The readable report: one saved session as a document a teacher can print or save as PDF. It reads the
+// same rows the .db file holds (listSessions / sessionFeatures) and renders them through js/report.mjs -
+// no new measurement. window.print() is only reached from here, so the print stylesheet can hide the
+// camera UI and show just the paper.
+// ---------------------------------------------------------------------------
+let reportRows = [];
+function renderReportBody() {
+  const i = Number($('rpPick').value) || 0;
+  const s = reportRows[i];
+  if (!s) { $('rpPaper').innerHTML = '<p class="rp-empty">Chưa có phiên nào trong database.</p>'; return; }
+  const model = buildReportModel(s, sqlStore.sessionFeatures(s.session_row),
+    { classLabel: sqlStore.classLabel });
+  $('rpPaper').innerHTML = reportHtml(model);
+  $('reportScroll').scrollTop = 0;
+}
+function openReport() {
+  if (!sqlStore || !sqlStore.enabled) { log('Chưa mở được database nên chưa xem được báo cáo.'); return; }
+  reportRows = sqlStore.listSessions();
+  if (!reportRows.length) {
+    log('Chưa có phiên nào được ghi. Đo rồi bấm Dừng (hoặc đổi em) để lưu một phiên, sau đó xem báo cáo.');
+    return;
+  }
+  const sel = $('rpPick');
+  sel.innerHTML = '';
+  reportRows.forEach((s, i) => {
+    const o = document.createElement('option');
+    o.value = String(i);
+    const name = s.student_name || s.student_id || 'Không rõ';
+    o.textContent = name + ' · ' + fmtDateTime(s.ended_at_wall_ms)
+      + ' · ' + Math.floor((s.valid_ms || 0) / 60000) + ' phút hợp lệ';
+    sel.appendChild(o);
+  });
+  sel.value = '0';
+  renderReportBody();
+  $('reportOverlay').classList.add('open');
+  $('reportOverlay').setAttribute('aria-hidden', 'false');
+  document.body.classList.add('report-open');
+  $('rpClose').focus();
+}
+function closeReport() {
+  $('reportOverlay').classList.remove('open');
+  $('reportOverlay').setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('report-open');
+}
+$('sqlreport').onclick = openReport;
+$('rpPick').onchange = renderReportBody;
+$('rpClose').onclick = closeReport;
+$('rpPrint').onclick = () => window.print();
+$('reportOverlay').addEventListener('click', (e) => { if (e.target === $('reportOverlay')) closeReport(); });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && $('reportOverlay').classList.contains('open')) closeReport();
+});
+
+initSql();
 
 function fillStudents(selected) {
   const sel = $('student');
@@ -914,6 +1141,9 @@ function idTick(faces, t) {
 
   const pts = faces[0];
   measureIdx = 0;
+  // One head leaves nothing to choose, so a lock from a crowd is dropped rather than kept as a number
+  // the plate would go on quoting while the column measures the only child in shot.
+  measureLock = -1;
   if (learningId) {
     learnTick(pts, t);
     return;
@@ -945,17 +1175,24 @@ function idTick(faces, t) {
         + '/r ' + r.radius.toFixed(2),
       colour: C.HINT_AMBER,
     };
-    // A turned frame must also break the streak, or three frames of a straight face plus one glance at
+    // A turned frame must also break the streak, or NEED-1 frames of a straight face plus one glance at
     // the wall would still add up to a switch.
     faceM.resetVotes();
     return;
   }
   const voted = faceM.vote(r.ok ? r.id : null);
   const who = nameOf(r.id);
+  // The two certainty bars and the number each one is judged on, on the screen while the child sits
+  // there: "không chắc" alone cannot be acted on, because an operator cannot tell a stranger (learn this
+  // face) from a classmate who is nearly as close (the bank is too loose, learn both again).
   idStatus = {
     text: 'nhận diện ' + who + ' · d ' + r.dist.toFixed(2) + '/r ' + r.radius.toFixed(2)
-      + (r.second ? ' · kề ' + r.secondRatio.toFixed(2) : '')
-      + (r.ok ? ' · ' + faceM.voting.count + '/' + IDENTITY.NEED : ' · không chắc'),
+      + (r.second ? ' · kề ' + r.secondRatio.toFixed(2)
+        + ' (cách ' + leadNote(r.lead) + ', cần ' + IDENTITY.MARGIN.toFixed(2) + '×)' : '')
+      + (r.ok ? ' · ' + faceM.voting.count + '/' + IDENTITY.NEED
+        : ' · chưa chắc: ' + (r.why === 'radius'
+          ? 'ngoài bán kính ' + r.radius.toFixed(2)
+          : 'em kề quá gần (cần ' + IDENTITY.MARGIN.toFixed(2) + '×)')),
     colour: r.ok ? (r.id === bound.id ? C.SEI_GOOD : C.PRIMARY) : C.HINT_AMBER,
   };
   if (!voted || !r.ok || !seatArmed) return;
@@ -1005,6 +1242,17 @@ function gateNote(g) {
   return 'lưới điểm không vững';
 }
 
+/**
+ * The gap to the runner-up, in words an operator can read off the screen.
+ *
+ * A perfect match divides by a distance of about zero, so the raw ratio comes out as something like
+ * 362538188978356×, and a plate with that on it is a plate nobody believes. Past two digits the number
+ * has stopped carrying information anyway - "no contest" is the fact being reported.
+ */
+function leadNote(v) {
+  return isFinite(v) && v < 100 ? v.toFixed(2) + '×' : 'rất xa';
+}
+
 function multiTick(faces, sigs, gates) {
   if (learningId) {
     const who = nameOf(learningId);
@@ -1034,13 +1282,17 @@ function multiTick(faces, sigs, gates) {
     if (!row.cands.length) return { i, text: tag + 'chưa học mặt cho ai', colour: C.HINT_AMBER };
     if (row.id) {
       named++;
-      return { i, text: tag + nameOf(row.id) + (row.id === bound.id ? ' (đang đo)' : '') + note,
+      // "(đang đo)" follows the head the column is actually scoring, which the N key now decides
+      // alongside the bound profile - marking row.id === bound.id would keep pointing at the dropdown
+      // while the numbers came from the head beside it.
+      return { i, text: tag + nameOf(row.id) + (i === measureIdx ? ' (đang đo)' : '') + note,
         colour: gate ? C.HINT_AMBER : (row.id === bound.id ? C.SEI_GOOD : C.PRIMARY) };
     }
     return { i,
       text: tag + (row.taken ? 'trùng tên bạn bên cạnh' : 'chưa nhận ra')
         + ' · ' + row.ratio.toFixed(2) + ' lần ngưỡng'
-        + (row.ambiguous ? ' · hai em quá giống' : '') + note,
+        + (row.why === 'margin' ? ' · hai em quá giống (cần ' + IDENTITY.MARGIN.toFixed(2) + '×)' : '')
+        + (row.why === 'radius' ? ' · ngoài bán kính' : '') + note,
       colour: C.HINT_AMBER };
   });
   // How many profiles this frame is writing at once: the one the dropdown holds, plus one per named head
@@ -1049,6 +1301,11 @@ function multiTick(faces, sigs, gates) {
   const ids = new Set(rows.filter((r) => r && r.id).map((r) => r.id));
   const recN = recPeersOn ? Math.max(1, ids.size) : 1;
   const gateN = (gates || []).filter(Boolean).length;
+  // One column can only talk about one child, so the frame says which head it is and how that head was
+  // picked - the page's own order, or the operator's N key. Without this the column quietly follows
+  // pickMeasure()'s preference and nobody can tell which of the two faces a number came from.
+  const shownRow = rows[measureIdx];
+  const whom = shownRow && shownRow.id ? nameOf(shownRow.id) : 'em chưa nhận diện được';
   idStatus = {
     text: faceLabels.length + ' người trong khung · gọi tên được ' + named + '/'
       + faceLabels.length + ' · mỗi em một ô cảnh báo riêng · '
@@ -1056,7 +1313,19 @@ function multiTick(faces, sigs, gates) {
         ? 'đang lưu đồng thời ' + recN + ' hồ sơ, không tự đổi hồ sơ'
         : (recPeersOn ? 'chỉ 1 hồ sơ trong khung được ghi, không tự đổi hồ sơ'
           : 'chỉ ghi điểm 1 em (tắt "Ghi cùng lúc"), không tự đổi hồ sơ'))
-      + (gateN ? ' · ' + gateN + ' em quay ngang hoặc sát biên, tên giữ nguyên chứ không đoán thêm' : ''),
+      + (gateN ? ' · ' + gateN + ' em quay ngang hoặc sát biên, tên giữ nguyên chứ không đoán thêm' : '')
+      + ' · cột số liệu đang đo ' + whom
+      + (shownRow && shownRow.cands.length
+        // Same two numbers the single-head plate prints, so the crowd case is not the case where the
+        // operator has to take the name on trust: the distance against that head's own radius, and how
+        // far ahead the runner-up is.
+        ? ' (d ' + shownRow.dist.toFixed(2) + '/r ' + shownRow.radius.toFixed(2)
+          + (shownRow.cands.length > 1
+            ? ' · kề ' + leadNote(shownRow.lead) + ', cần ' + IDENTITY.MARGIN.toFixed(2) + '×'
+            : ' · không có em kề')
+          + ')'
+        : '')
+      + ' · ' + (measureLock >= 0 ? 'khóa bằng phím N' : 'tự chọn, bấm N để đổi em'),
     colour: C.HINT_AMBER,
   };
 }
@@ -1071,23 +1340,14 @@ function multiTick(faces, sigs, gates) {
  */
 function commitPeer(peer, closing, t) {
   const p = peer.s.profile;
-  // The band counters live on the run that is about to be closed and endHabitSession() drops it, so they
-  // are read first or the shared row would arrive without its band columns.
-  const bandOutcomes = closing && peer.s.habitSession ? peer.s.habitSession.bandOutcomes() : null;
   const out = closing ? peer.s.endHabitSession() : peer.s.saveHabitSession();
   peer.saveAt = t;
   if (!p || !out) return;
   if (out.changed) persistProfile(p);
   if (closing) {
-    // The phone uploads its session to Firestore at this same moment; this is the web leg's copy of that
-    // upload, queued so a missing network costs the row a retry, never the recording.
-    queueSession({
-      doc: cloudDocId(p.id, out.summary.id),
-      payload: buildSessionPayload({
-        studentId: p.id, studentName: p.name, summary: out.summary, bandOutcomes,
-        endedAtWallMs: Date.now(), ineligibleReason: out.reason || null,
-      }),
-    });
+    // A bystander is only ever named by the face bank, so its rows carry identity 'face' - the same
+    // claim the profile write makes, and the database must not read as a human declaration.
+    sqlWriteSession(p, out, 'face');
     const min = (out.summary.validMs / 60000).toFixed(1);
     log(out.reason
       ? 'Không học phiên của "' + p.name + '": ' + out.reason + ' (' + min
@@ -1158,6 +1418,7 @@ function peerTick(faces, blend, t, light) {
     peer.goneAt = 0;
     const rr = peer.s.process(faces[i], { faceBlendshapes: [(blend || [])[i]] }, t, light,
       contextNearby(faces[i]));
+    peer.last = rr;
     const sei = rr.sei === null || rr.sei === undefined ? '--' : Math.round(rr.sei);
     if (!rr.calibrated) {
       const c = rr.calibration || { frames: 0, target: 60 };
@@ -1193,13 +1454,21 @@ function peerTick(faces, blend, t, light) {
 /**
  * Which head the measured column follows while several are on screen.
  *
- * The phone scores one child per sitting, so this leg keeps doing that even when a second head
- * wanders into frame. Order of precedence: the head that matches the bound profile (so a parent or a
- * classmate leaning in cannot move the numbers), then the head this column was already measuring if
- * its mesh is still there, then simply the largest - a face half out of frame is a worse subject than
- * the one looking at the lens.
+ * An operator who pressed N owns the choice: the locked head is measured until it leaves the frame, at
+ * which point the lock is dropped rather than silently kept pointing at a head that is not there. That
+ * is the whole point of the key - with two children in shot the machine's own preference below can pick
+ * the one the adult can see is not doing the work, and a column cannot be argued with.
+ *
+ * Otherwise the phone's rule: one child per sitting. Order of precedence: the head that matches the
+ * bound profile (so a parent or a classmate leaning in cannot move the numbers), then the head this
+ * column was already measuring if its mesh is still there, then simply the largest - a face half out of
+ * frame is a worse subject than the one looking at the lens.
  */
 function pickMeasure(faces, sigs, rows) {
+  if (measureLock >= 0) {
+    if (measureLock < faces.length && sigs[measureLock]) return measureLock;
+    measureLock = -1;
+  }
   const mine = rows.findIndex((r) => r && r.id && r.id === bound.id);
   if (mine >= 0) return mine;
   if (measureIdx < faces.length && sigs[measureIdx]) return measureIdx;
@@ -1210,6 +1479,59 @@ function pickMeasure(faces, sigs, rows) {
     if (span > widest) { widest = span; best = i; }
   }
   return best;
+}
+
+/**
+ * N: walk the heads on screen, one press per child, and come back to "the page chooses" at the end.
+ *
+ * Auto is part of the cycle rather than a second key, because the operator has to be able to hand the
+ * choice back without remembering another letter. The lock is an index in this frame's face list, so it
+ * is released as soon as the frame holds fewer heads than the press asked for.
+ */
+function cycleMeasure(n) {
+  if (!n) return 'khung hình đang không có mặt nào để chọn';
+  measureLock = measureLock >= n - 1 ? -1 : measureLock + 1;
+  return measureLock < 0
+    ? 'Cột số liệu tự chọn em (theo hồ sơ đang gắn) - bấm N để chỉ định.'
+    : 'Cột số liệu đang đo em thứ ' + (measureLock + 1) + '/' + n + ' trong khung hình.';
+}
+
+// One SEI curve per head, not one per page. The phone's sparkline is that child's last two minutes, and
+// this column moves between children - the bank names a second head, or the operator presses N - so one
+// shared array would draw two children as one line, which is the thing the curve exists to show.
+const seiHistories = new Map();
+
+/**
+ * Which curve a head owns: the student the bank named, else the person box that head sits in, else the
+ * head's position in the frame.
+ *
+ * In that order, because the first is the only key that survives the child standing up and coming back,
+ * and the second is the only one that survives a head nobody has learned. The last is the fallback for a
+ * frame with no layer-1 boxes at all (Y off, or a machine that could not run the detector), where nothing
+ * else tells two heads apart - and with one head in shot it is the only key ever used.
+ */
+function seiKeyFor(faces, idx) {
+  const row = faceRows && faceRows[idx];
+  if (row && row.id) return row.id;
+  const nose = faces && faces[idx] ? faces[idx][1] : null;
+  const owner = nose && boxes ? ownerOf(boxes.persons, nose.x * cv.width, nose.y * cv.height) : null;
+  return owner ? 'p#' + owner.id : 'i' + idx;
+}
+
+/** The bucket for one key, created empty on first use, and made the curve the column draws. */
+function seiBucketFor(key) {
+  let a = seiHistories.get(key);
+  if (!a) {
+    // A booth runs one page for a school day and the person boxes renumber as children come and go, so
+    // the map holds the last few heads rather than every head the camera has ever seen.
+    if (seiHistories.size >= 24) seiHistories.delete(seiHistories.keys().next().value);
+    a = [];
+    seiHistories.set(key, a);
+  }
+  // A different array is a different head's curve, so the picture must change even though nothing was
+  // sampled this second.
+  if (a !== seiHistory) seiChartDirty = true;
+  return seiHistory = a;
 }
 
 /**
@@ -1359,15 +1681,23 @@ function bindStudent(id, why) {
   // students mid-press must not silently save those frames onto the new one.
   learningId = null;
   faceM.resetVotes();
+  // The dropdown is the other hand on the same choice, so it wins: an N-lock set for the previous child
+  // would keep the column pointed at a head the operator has just stopped asking about.
+  measureLock = -1;
   const prevProfile = session.profile;
+  const prevIdentity = boundIdentity;
   const verdict = session.endHabitSession();
   if (prevProfile && verdict) {
     if (verdict.changed) persistProfile(prevProfile);
+    sqlWriteSession(prevProfile, verdict, prevIdentity);
     if (verdict.reason && prevProfile !== null) {
       log('Phiên của "' + prevProfile.name + '" không được học: ' + verdict.reason + '.');
     }
   }
   bound = loadProfile(id);
+  // 'Tự nhận diện:' is the face vote's own prefix (the only caller that passes it); every other why
+  // string is a human choice, and the initial bind passes null.
+  boundIdentity = why && why.startsWith('Tự nhận diện:') ? 'face' : 'manual';
   session.setProfile(bound);
   // This child is now measured by the session above, so the copy that existed to record them as a
   // bystander has to go - but its run belongs to this name and closes under it first, the same way the
@@ -1410,8 +1740,15 @@ reloadFaces();
 // window - not the last four seconds at 30 FPS, which is what sampling every frame would show.
 const SEI_HISTORY_MAX = 120;
 const SEI_SAMPLE_MS = 1000;
-const seiHistory = [];
+// One curve per head, not one per page: seiHistories, seiBucketFor() and seiKeyFor() live with the
+// identity block below, next to the N key that moves the column between them. seiHistory is the bucket
+// currently being drawn and is what the sparkline reads.
+let seiHistory = [];
 let seiSampleAtMs = 0;
+// The sparkline only needs re-rasterising when its data actually moved: a new sample, a switch of the
+// measured head, a canvas rebuild or resize, or a reset - and nowhere else. The flag is set at exactly
+// those places below so the curve still mirrors the column every second, instead of re-drawing every rAF.
+let seiChartDirty = true;
 
 // The phone's Canvas paints nothing but the landmark dots (MainActivity.kt:2019-2052), so the dots are
 // always on and the two overlays this leg can add - the crop box and the numbers - sit behind keys.
@@ -1558,6 +1895,8 @@ function buildRows(lines) {
         c.height = Math.round(44 * textScale);
         el.appendChild(c);
         chartCanvas = c;
+        // A freshly built canvas is blank and its old content is gone, so it draws once on the next paint.
+        seiChartDirty = true;
       }
     }
   }
@@ -1572,6 +1911,24 @@ function buildRows(lines) {
  * textScale multiplies every row by the same factor, so a row's style tag still says which Compose
  * style it came from and the column keeps its internal proportions.
  */
+// One row per recognised child, all visible together. Names are operator-typed, so every row is built
+// with textContent (never innerHTML) and coloured by that child's own SEI. Hidden until at least two
+// children are named, because with one the numbers column already says everything.
+function paintKidMetrics() {
+  const wrap = $('kidwrap');
+  if (!wrap) return;
+  if (kidSnap.length < 2) { wrap.hidden = true; return; }
+  wrap.hidden = false;
+  const box = $('kidrows');
+  box.textContent = '';
+  for (const k of kidSnap) {
+    const row = document.createElement('div');
+    row.textContent = kidLine(k.name, k.h);
+    row.style.cssText = 'padding:3px 0;border-top:1px solid rgba(28,27,31,.12);color:' + seiColour(k.sei) + ';';
+    box.appendChild(row);
+  }
+}
+
 function paintRows(lines) {
   if (rowEls.length !== lines.length) buildRows(lines);
   lines.forEach((l, i) => {
@@ -1579,9 +1936,9 @@ function paintRows(lines) {
     const t = PHONE_TYPE[l.style] || PHONE_TYPE.bodyLarge;
     if (l.text === CHART_ROW) {
       const w = (el.parentNode || topEl).clientWidth;
-      if (w && chartCanvas.width !== w) chartCanvas.width = w;
+      if (w && chartCanvas.width !== w) { chartCanvas.width = w; seiChartDirty = true; }
       const h = Math.round(44 * textScale);
-      if (chartCanvas.height !== h) chartCanvas.height = h;
+      if (chartCanvas.height !== h) { chartCanvas.height = h; seiChartDirty = true; }
       return;
     }
     const style = `font-size:${(t.px * textScale).toFixed(2)}px; line-height:${t.lh}; font-weight:${t.weight};`
@@ -1589,7 +1946,7 @@ function paintRows(lines) {
     if (el.getAttribute('style') !== style) el.setAttribute('style', style);
     if (el.textContent !== l.text) el.textContent = l.text;
   });
-  if (chartCanvas) drawSeiChart(chartCanvas);
+  if (chartCanvas && seiChartDirty) { drawSeiChart(chartCanvas); seiChartDirty = false; }
 }
 
 /** The 44 dp sparkline under the SEI header, drawn the phone's way (MainActivity.kt:1077-1109). */
@@ -2132,6 +2489,7 @@ function loop() {
   idTick(lastFaces, t);
   learnBadgeTick();
   const pts = lastPts = lastFaces ? (lastFaces[measureIdx] || lastFaces[0]) : null;
+  let measH = null;
   // The other heads are judged before anything is drawn, so a box over a second child is the same age as
   // the numbers column rather than one frame behind it. With one head in shot every peer session is
   // paused instead: a child who stepped out must not have their number dragged down by the gap.
@@ -2142,6 +2500,22 @@ function loop() {
     for (const [id, peer] of peerSessions) {
       peer.s.pause(t);
       if (t - peer.at > 60000) peerSessions.delete(id);
+    }
+  }
+  // The classroom layer on its own clock, the way the detector has one. The arithmetic is only over
+  // landmarks the frame already returned, but it is per head, and nothing about a lesson changes inside
+  // 33 ms - so a sample every CONTEXT_T.SAMPLE_MS is enough to let the hold timer do its job.
+  if (t - classAtMs >= CONTEXT_T.SAMPLE_MS) {
+    classAtMs = t;
+    const heads = lastFaces ? headSignals(lastFaces, cv.width, cv.height, boxes ? boxes.persons : []) : [];
+    const before = classSnap ? classSnap.context : null;
+    classSnap = classEngine.update({ heads,
+      persons: boxes ? boxes.persons.length : 0, room: roomObjects(boxes) }, t);
+    // Edge-triggered, exactly like the phone-context penalty below: a label that moved has to say so in
+    // the log, and a label that is merely still there must not bury the rest of it.
+    if (before !== null && before !== classSnap.context) {
+      log('Ngữ cảnh lớp: ' + CLASS_CONTEXT_VI[before] + ' → ' + classSnap.label
+        + ' · ' + classSnap.evidence);
     }
   }
   let lines = [];
@@ -2195,12 +2569,17 @@ function loop() {
       habitSaveAtMs = t;
       commitHabit(false);
     }
+    // The curve is repointed before the sample is taken, so the sparkline always shows the head the
+    // column is measuring even in a second where nothing new is sampled.
+    const curve = seiBucketFor(seiKeyFor(lastFaces, measureIdx));
     if (r.calibrated && r.sei !== null && r.sei !== undefined && t - seiSampleAtMs >= SEI_SAMPLE_MS) {
       seiSampleAtMs = t;
-      seiHistory.push(r.sei);
-      if (seiHistory.length > SEI_HISTORY_MAX) seiHistory.shift();
+      curve.push(r.sei);
+      if (curve.length > SEI_HISTORY_MAX) curve.shift();
+      seiChartDirty = true;
     }
-    lines = hudLines(toHud(r), lastFaces ? lastFaces.length : 1, cost, fpsStamps.length,
+    measH = toHud(r);
+    lines = hudLines(measH, lastFaces ? lastFaces.length : 1, cost, fpsStamps.length,
       hudThr(), imgProcText());
 
     // Dots always, exactly as the phone's Canvas does; the crop box is this leg's addition.
@@ -2209,13 +2588,28 @@ function loop() {
   } else {
     // No face is missing data, not inattention: neither window may average the gap.
     session.pause(t);
-    lines = hudLines(null, 0, cost, fpsStamps.length, hudThr(), imgProcText());
+    lines = hudLines(null, 0, cost, fpsStamps.length, hudThr(), imgProcText(), classSnap);
     if (showBox) plate(4, 4, 'không thấy mặt trong khung hình', C.RED, 12);
+  }
+
+  // Every recognised head keeps its own numbers on screen at once: the measured head from this frame's
+  // session, each bystander from the peer session peerTick already ran. Unnamed heads are skipped, so a
+  // stranger never gets a fabricated score here either.
+  kidSnap = [];
+  if (faceRows && lastFaces) {
+    for (let i = 0; i < lastFaces.length; i++) {
+      const row = faceRows[i];
+      if (!row || !row.id) continue;
+      const peer = peerSessions.get(row.id);
+      const h = i === measureIdx ? measH : (peer && peer.last ? toHud(peer.last) : null);
+      kidSnap.push({ name: nameOf(row.id), h, sei: h ? h.sei : null });
+    }
   }
 
   lastLines = lines;
   if (numbersOnFrame) paintOnFrame(lines);
   if (!$('hud').classList.contains('hidden')) paintRows(lines);
+  paintKidMetrics();
   raf = requestAnimationFrame(loop);
 }
 
@@ -2235,6 +2629,8 @@ function stop() {
   faceLabels = null;
   faceRows = null;
   peerAlerts = null;
+  kidSnap = [];
+  if ($('kidwrap')) $('kidwrap').hidden = true;
   // Pressing Dừng ends every sitting in the frame, not just the one the dropdown held: a bystander's run
   // is committed under their own name first, then the sessions go. With "Ghi cùng lúc" off they never
   // wrote anything, so there is nothing to commit and only the caption sessions are dropped.
@@ -2243,9 +2639,17 @@ function stop() {
     peerSessions.delete(id);
   }
   measureIdx = 0;
+  measureLock = -1;
   lastLight = null;
-  seiHistory.length = 0;
+  seiHistories.clear();
+  seiHistory = [];
   seiSampleAtMs = 0;
+  seiChartDirty = true;
+  // A new sitting is a new room: the held activity label describes the class that was just in shot, and
+  // carrying it into the next one would be the same mistake as carrying a sparkline across.
+  classEngine.reset();
+  classSnap = null;
+  classAtMs = 0;
   if (video && video.srcObject) video.srcObject.getTracks().forEach((s) => s.stop());
   // A stopped stream keeps showing its last frame, and a still picture of a face inside a live-looking
   // box is exactly the thing this app promises not to do. The column keeps its final numbers and says so;
@@ -2318,8 +2722,17 @@ $('recal').onclick = () => {
   enhancer.reset();
   lastPts = null;
   lastLight = null;
-  seiHistory.length = 0;
+  // Every head re-calibrates here, not only the measured one: the sessions were all just reset, so a
+  // curve kept from the old baseline would be a line about a sitting that no longer exists.
+  seiHistories.clear();
+  seiHistory = [];
   seiSampleAtMs = 0;
+  seiChartDirty = true;
+  // A new sitting is a new room: the held activity label describes the class that was just in shot, and
+  // carrying it into the next one would be the same mistake as carrying a sparkline across.
+  classEngine.reset();
+  classSnap = null;
+  classAtMs = 0;
   log('Hiệu chuẩn lại: đang nạp lại đường cơ sở.');
 };
 
@@ -2437,6 +2850,7 @@ $('forgetstu').onclick = () => {
   log('Đã xóa ' + n + ' phiên' + (nf ? ' và ' + nf + ' khung mặt' : '') + ' của "' + bound.name
     + '" trong trình duyệt này. '
     + (nf ? 'Máy sẽ không còn tự nhận ra em này cho tới khi học mặt lại. ' : '')
+    + (sqlStore ? 'Tệp SQLite vẫn giữ các phiên đã ghi trước đó. ' : '')
     + 'Máy quay vẫn đang đo, nhưng học lại từ đầu.');
 };
 
@@ -2540,10 +2954,17 @@ function applyWide() {
 // picked one by hand.
 addEventListener('resize', () => { applyWide(); autoFit(); });
 
-// The five view switches, in one place so a key press and a button press cannot drift apart. They used to
-// exist ONLY as keys, which made them unreachable on a phone - and this leg is meant to be openable there.
+// The view switches and the head-picking key, in one place so a key press and a button press cannot
+// drift apart. They used to exist ONLY as keys, which made them unreachable on a phone - and this leg is
+// meant to be openable there.
 function pressKey(key) {
   const k = String(key).toLowerCase();
+  if (k === 'n') {
+    // Its own answer instead of the legend below, because what the operator needs right after this
+    // press is which child the column is now describing.
+    stat(cycleMeasure(lastFaces ? lastFaces.length : 0));
+    return true;
+  }
   if (k === 'f') { showBox = !showBox; log('Hộp mặt: ' + (showBox ? 'bật' : 'tắt')); }
   else if (k === 'y') {
     showYolo = !showYolo;
@@ -2566,7 +2987,8 @@ function pressKey(key) {
     + (showYolo ? 'bật' : 'tắt') + ') · O: số liệu đè lên khung hình ('
     + (numbersOnFrame ? 'bật' : 'tắt') + ') · G: tăng cường ảnh thiếu sáng ('
     + (enhanceAuto ? 'tự động' : 'tắt') + ') · H: cột số liệu ('
-    + (hudEl.classList.contains('hidden') ? 'ẩn' : 'hiện') + ')');
+    + (hudEl.classList.contains('hidden') ? 'ẩn' : 'hiện') + ') · N: chọn em đang đo ('
+    + (measureLock >= 0 ? 'đang khóa ở đầu thứ ' + (measureLock + 1) : 'tự động') + ')');
   return true;
 }
 
@@ -2575,7 +2997,7 @@ addEventListener('keydown', (ev) => {
   if (pressKey(ev.key)) ev.preventDefault();
 });
 
-// The same five, as buttons, so a phone or a tablet can reach them. Wired by data-key, because the labels
+// The same keys, as buttons, so a phone or a tablet can reach them. Wired by data-key, because the labels
 // are what an operator reads and the key is what the shared function already understands.
 function wireKeyRow() {
   const row = document.getElementById('keyrow');
@@ -2627,5 +3049,19 @@ if (q.get('auto') === '1') {
   setTimeout(() => init().catch((e) => log('Lỗi: ' + e.message)), 300);
 }
 </script>
+<!-- The readable report: one saved session laid out as a document a teacher can print or save as PDF.
+     Hidden until "Xem báo cáo" opens it; the print stylesheet shows only #rpPaper. -->
+<div id="reportOverlay" role="dialog" aria-modal="true" aria-labelledby="rpDialogTitle" aria-hidden="true">
+  <div id="reportToolbar">
+    <label class="rp-pick-label" for="rpPick">Phiên</label>
+    <select id="rpPick" aria-label="Chọn phiên để xem"></select>
+    <span id="rpDialogTitle" class="rp-toolbar-title">Báo cáo phiên đo</span>
+    <button id="rpPrint" type="button">In / Lưu PDF</button>
+    <button id="rpClose" type="button" class="rp-ghost">Đóng</button>
+  </div>
+  <div id="reportScroll">
+    <article id="rpPaper"></article>
+  </div>
+</div>
 </body>
 </html>

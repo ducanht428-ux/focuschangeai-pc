@@ -57,6 +57,9 @@ const C3 = { eyeHalf: 0.066, noseLen: 0.058, mouthDrop: 0.086, mouthHalf: 0.062,
   jawHalf: 0.094, cheekHalf: 0.104, browHalf: 0.058, wingHalf: 0.034 };
 
 const NAMES = { hs1: 'HS 1', hs2: 'HS 2', hs3: 'HS 3', hs4: 'HS 4' };
+// A face exactly between the two enrolled students: inside both of their radii, and no clearer about
+// which one it is. Used to prove the margin bar refuses it rather than naming the closer guess.
+const MIX = Object.fromEntries(Object.keys(A).map((k) => [k, (A[k] + B[k]) / 2]));
 
 /**
  * A fresh copy of the shipped identity block with the browser globals it expects.
@@ -69,7 +72,7 @@ function makePage(three) {
   const C = { GRAY: [136, 136, 136], HINT_AMBER: [255, 160, 0], PRIMARY: [102, 80, 164],
     SEI_GOOD: [46, 125, 50], ALERT_ORANGE: [239, 108, 0] };
   const rowY = (y) => Math.max(0, Math.min(y, cv.height - 24));
-  const seen = { plates: [], binds: [], logs: [], stats: [], sessions: [], saved: [], uploads: [],
+  const seen = { plates: [], binds: [], logs: [], stats: [], sessions: [], saved: [], sql: [],
     uncal: false };
   const faceM = new FaceMatcher();
   for (let i = 0; i < 6; i++) faceM.addSample('hs1', faceSignature(mesh(A)));
@@ -141,16 +144,23 @@ function makePage(three) {
     'nameOf', 'currentId',
     'bindStudent', 'faceM', 'assignFaces', 'faceSignature', 'faceGate', 'IDENTITY', 'saveFace', 'seen',
     'MonitorSession', 'loadProfile', 'toHud', 'alertSentence', 'contextNearby', 'sensLevel',
-    'persistProfile', 'HABIT_AUTOSAVE_MS', 'PEER_GONE_MS',
-    'queueSession', 'cloudDocId', 'buildSessionPayload',
+    'persistProfile', 'HABIT_AUTOSAVE_MS', 'PEER_GONE_MS', 'sqlWriteSession',
     `let idStatus = null, faceLabels = null, absentSinceMs = 0, lastGapMs = 0, seatArmed = true,
          lastSwitchMs = 0, learningId = null, idAtMs = 0, autoIdOn = true, recPeersOn = true,
-         measureIdx = 0, boxes = null, faceRows = null, peerAlerts = null, peerSessions = new Map(),
+         measureIdx = 0, measureLock = -1, boxes = null, faceRows = null, peerAlerts = null,
+         seiHistory = [], peerSessions = new Map(),
          learnUntilMs = 0, learnNextMs = 0, learnGot = 0, learnSkipped = 0, learnSkipNote = '',
          builtNumFaces = 0,
          bound = { id: 'hs1', name: 'HS 1' };
      ${src}
      return { idTick, multiTick, peerTick, commitPeer, pickMeasure, facePlateAt, learnTick, seen, faceM,
+       cycleMeasure, cycle: (n) => cycleMeasure(n), seiKeyFor, seiBucketFor,
+       // The N key's lock and the per-head curves, for the checks at the end of this file.
+       setLock: (i) => { measureLock = i; },
+       curve: () => seiHistory.slice(),
+       // What the frame loop does with a measured SEI: push into the bucket the column is pointing at.
+       pushCurve: (v) => { seiHistory.push(v); },
+       curves: () => [...seiHistories.entries()].map(([k, a]) => k + '=' + a.join('/')).join(' '),
        // The button handler's own bookkeeping, copied line for line from the shipped onclick.
        startLearn: (id, t) => { learningId = id; learnUntilMs = t + IDENTITY.LEARN_HOLD_MS;
          learnNextMs = 0; learnGot = 0; learnSkipped = 0; learnSkipNote = ''; faceM.resetVotes(); },
@@ -170,8 +180,9 @@ function makePage(three) {
        // loadProfile memoises, so this is the same object the page wrote, not a fresh read.
        profile: (id) => loadProfile(id),
        peerSession: (id) => { const q = peerSessions.get(id); return q ? q.s : null; },
-       state: () => ({ idStatus, faceLabels, measureIdx, learningId, seatArmed, absentSinceMs,
-         lastGapMs, peerAlerts, nPeers: peerSessions.size, learnGot, learnSkipped, learnSkipNote }),
+       state: () => ({ idStatus, faceLabels, measureIdx, measureLock, learningId, seatArmed,
+         absentSinceMs, lastGapMs, peerAlerts, nPeers: peerSessions.size, learnGot, learnSkipped,
+         learnSkipNote }),
      };`);
   return body(cv, C, rowY,
     (x, y, text, colour) => seen.plates.push({ x, y, text, colour }),
@@ -188,11 +199,9 @@ function makePage(three) {
     (id, list) => { seen.faces = list; return true; }, seen,
     FakeSession, loadProfile, toHud, alertSentence, contextNearby, 1,
     (p) => seen.saved.push(p.id), 30000, 20000,
-    // The shared-store upload is the real cloud.mjs in the browser; here it is recorded so a test can
-    // assert a closed sitting actually produced a row, without any network.
-    (rec) => seen.uploads.push(rec),
-    (id, sid) => id + '-web-' + sid,
-    (o) => ({ student_id: o.studentId, session_id: o.summary && o.summary.id }));
+    // The SQLite hook lives outside this slice (it needs sql.js and the DOM), so it is handed in the
+    // same way as persistProfile - and recorded, so the closing-commit wiring can be asserted too.
+    (p, out, identity) => seen.sql.push({ id: p.id, identity, validMs: out.summary.validMs }));
 }
 
 // --- 1. two heads, two names, no switching --------------------------------------------------
@@ -225,6 +234,108 @@ function makePage(three) {
   p.setMeasureIdx(0);
   p.idTick([mesh(B, -0.16), mesh(A, 0.16)], 3000);
   check('an unknown profile falls back to the head already being measured', p.state().measureIdx, 0);
+}
+
+// --- 2b. N: the operator, not the bank, decides which head the column measures --------------
+// One column, one child, and the choice is now a key press. This is the part the page cannot check for
+// itself: pickMeasure()'s own preference follows the bound profile, so a number can end up describing the
+// bystander while the adult is looking at the child doing the work.
+{
+  const p = makePage();
+  const faces = [mesh(A, -0.16), mesh(B, 0.16)];
+  p.idTick(faces, 1000);
+  check('by default the bound child is the measured one', p.state().measureIdx, 0);
+  check('and their label carries the marker', p.state().faceLabels[0].text, 'HS 1 (đang đo)');
+  check('the frame names the child being measured', p.state().idStatus.text,
+    (a) => a.includes('cột số liệu đang đo HS 1') && a.includes('tự chọn, bấm N'));
+  check('N press one: the column goes to head 1', p.cycle(2),
+    'Cột số liệu đang đo em thứ 1/2 trong khung hình.');
+  check('N press two: the column goes to head 2', p.cycle(2),
+    'Cột số liệu đang đo em thứ 2/2 trong khung hình.');
+  p.idTick(faces, 2000);
+  check('a locked head is measured even when the bank would pick the other', p.state().measureIdx, 1);
+  check('the marker moved to the head actually measured', p.state().faceLabels[1].text.includes('(đang đo)'), true);
+  check('the bound child keeps their name but loses the marker', p.state().faceLabels[0].text,
+    (a) => a.includes('HS 1') && !a.includes('đang đo'));
+  check('and the plate says the lock is what chose', p.state().idStatus.text,
+    (a) => a.includes('đo HS 2') && a.includes('khóa bằng phím N'));
+  // The crowd branch used to state the name and leave the evidence out, which is the one place an
+  // operator most needs it: two children in one frame is exactly when a near-tie happens.
+  check('the head being measured shows its distance against its own radius',
+    p.state().idStatus.text, (a) => /d \d+\.\d\d\/r \d+\.\d\d/.test(a));
+  check('and how far ahead the runner-up is, against the bar it has to clear',
+    p.state().idStatus.text, (a) => /kề (\d+\.\d+×|rất xa), cần \d+\.\d\d×/.test(a));
+  // This head is a verbatim copy of an enrolled sample, so the ratio against the runner-up divides by
+  // about zero. A raw toFixed here prints 362538188978356.13×, which reads as a broken meter rather than
+  // as "no contest" - the number is capped before it reaches the plate.
+  check('a lead too big to mean anything is printed as words, not digits',
+    p.state().idStatus.text, (a) => !/kề \d{3,}/.test(a));
+  check('N press three hands the choice back to the page', p.cycle(2),
+    'Cột số liệu tự chọn em (theo hồ sơ đang gắn) - bấm N để chỉ định.');
+  p.idTick(faces, 3000);
+  check('and the column returns to the bound child', p.state().measureIdx, 0);
+  p.cycle(2);
+  p.cycle(2);
+  p.idTick([mesh(A, -0.16)], 4000);
+  check('a locked head that leaves the frame releases the lock', p.state().measureLock, -1);
+  check('with the one child left measured', p.state().measureIdx, 0);
+  // Three heads, locked on the third, then the frame shrinks to two: the index the key picked no longer
+  // exists, and a column that kept quoting "head 3" would be describing a child who is not on screen.
+  p.idTick([mesh(A, -0.16), mesh(B, 0), mesh(C3, 0.16)], 4500);
+  p.cycle(3); p.cycle(3); p.cycle(3);
+  check('locked on the third head of three', p.state().measureLock, 2);
+  p.idTick([mesh(A, -0.16), mesh(B, 0.16)], 5000);
+  check('a lock past the last head in a smaller frame is dropped, not obeyed', p.state().measureLock, -1);
+  check('N with nobody in frame says so instead of locking on nothing', p.cycle(0),
+    'khung hình đang không có mặt nào để chọn');
+}
+
+// --- 2c. one SEI curve per head ---------------------------------------------------------------
+// The sparkline is the phone's last two minutes of ONE child. With the column movable between heads, a
+// single shared array would draw two children as one line - the exact mix-up the curve is for.
+{
+  const p = makePage();
+  const faces = [mesh(A, -0.16), mesh(B, 0.16)];
+  p.idTick(faces, 1000);
+  check('the two named heads own two different curves',
+    [p.seiKeyFor(faces, 0), p.seiKeyFor(faces, 1)].join(','), 'hs1,hs2');
+  p.seiBucketFor('hs1');
+  p.pushCurve(80);
+  p.seiBucketFor('hs2');
+  p.pushCurve(41);
+  p.seiBucketFor('hs1');
+  check('pointing the column at a head points the curve at it too', p.curve().join('/'), '80');
+  check('the bystander keeps their own line, not the averaged one', p.curves(), 'hs1=80 hs2=41');
+  // An unnamed head still needs a key that survives the model reordering its faces, or its curve moves
+  // every time the detector lists the heads differently. The person box is the only thing here that does.
+  const p2 = makePage();
+  p2.setBoxes({ persons: [{ id: 7, x0: 0, x1: 0.6 }, { id: 8, x0: 0.6, x1: 1 }] });
+  check('an unnamed head is keyed by the person box it sits in',
+    p2.seiKeyFor([mesh(A, -0.16), mesh(A, 0.16)], 1), 'p#8');
+  const p3 = makePage();
+  check('with layer 1 off, the head position is all there is', p3.seiKeyFor([mesh(A)], 0), 'i0');
+}
+
+// --- 2d. a refused name says which bar it missed ----------------------------------------------
+// "máy phải chắc hơn" is only usable if the operator can tell the two refusals apart, because they are
+// fixed by different things: a stranger needs "Học mặt" for that child, and a near-tie needs both
+// classmates enrolled again from more poses. The numbers of both bars are printed while the face is up.
+{
+  const p = makePage();
+  p.idTick([mesh(MIX)], 1000);
+  check('a face half HS 1 and half HS 2 is left unnamed', p.state().idStatus.text,
+    (a) => a.includes('chưa chắc: em kề quá gần') && a.includes('cần 1.60×')
+      && a.includes('d 0.18/r 0.30'));
+  // The cap on the lead must not swallow the case it was added for: a near-tie is only actionable
+  // because the operator can see it is 1.00× and not 1.59×.
+  check('a lead that is a real number is printed as one', p.state().idStatus.text,
+    (a) => /cách \d+\.\d\d×/.test(a));
+  const q = makePage();
+  q.idTick([mesh(C3)], 1000);
+  check('a stranger outside every radius says it missed the radius', q.state().idStatus.text,
+    (a) => a.includes('chưa chắc: ngoài bán kính'));
+  check('and still shows the distance it measured', q.state().idStatus.text,
+    (a) => /d \d+\.\d\d\/r 0\.30/.test(a));
 }
 
 // --- 3. the single-face path is untouched ----------------------------------------------------
@@ -363,6 +474,9 @@ function makePage(three) {
   check('their history is kept while they are only away a moment', p.state().nPeers, 1);
   p.peerTick([mesh(A, -0.16)], [null], 70000, 0.8);
   check('a minute away and the half-history is dropped', p.state().nPeers, 0);
+  check('the closing commit queued one database write', p.seen.sql.length, 1);
+  check('under the peer\'s own name, as a face match', p.seen.sql[0].id + '/' + p.seen.sql[0].identity,
+    'hs2/face');
   p.idTick(faces, 71000);
   p.peerTick(faces, [null, null], 71000, 0.8);
   check('so the return opens a fresh history, not the old one', p.seen.sessions.length, 2);
@@ -731,7 +845,10 @@ function makePage(three) {
     ['and the control is read', "$('recpeers').onchange"],
     ['enrolment refuses a crowd', 'Học mặt chỉ chạy khi'],
     ['stop() clears the face state', 'lastFaces = null'],
-    ['the column counts the heads in the frame', 'hudLines(toHud(r), lastFaces ? lastFaces.length : 1'],
+    ['the column counts the heads in the frame', 'hudLines(measH, lastFaces ? lastFaces.length : 1'],
+    ['the per-kid panel exists', 'id="kidwrap"'],
+    ['and is painted each frame', 'paintKidMetrics();'],
+    ['every recognised head feeds it', 'kidSnap.push({ name: nameOf(row.id)'],
     ['a single head is gated before it can vote', "const gate = faceGate(pts, 'match');"],
     // Anchored on the code after it: resetVotes() appears seven times in this page, so a bare needle
     // passes no matter which of them the gate block keeps.

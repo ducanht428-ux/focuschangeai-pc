@@ -24,19 +24,21 @@
 //   child is exactly as confusing as a stranger. faceGate() says so instead of voting.
 // - 20 numbers averaged as if they were equally reliable. The jaw and cheek widths jitter several times
 //   more than the nose lengths, and plain Euclidean distance lets the noisiest dimension pick the winner.
-//   FaceMatcher weights each dimension by its own measured noise, rescaled so a distance of 0.35 still
-//   means what R_FLOOR was tuned against; with a bank too thin to measure the noise it falls back to the
-//   unweighted distance rather than inventing weights.
+//   FaceMatcher weights each dimension by its own measured noise, rescaled so the distance keeps the
+//   units R_FLOOR was tuned in when every dimension is equally noisy; with a bank too thin to measure
+//   the noise it falls back to the unweighted distance rather than inventing weights.
 //
 // Pure math: no DOM, no camera, no localStorage. index.html feeds landmarks in and gets a proposal
 // out; store.mjs stays the only file that persists anything.
 
 export const IDENTITY = {
   // One signature is one frame's answer, and one frame is not enough to act on: the mesh jitters by
-  // more than the gap between two students when the light is bad. Three agreeing frames at VOTE_MS is
-  // three seconds of the same face, and the switch stays conservative.
+  // more than the gap between two students when the light is bad. NEED agreeing frames at VOTE_MS is
+  // that many seconds of the same face, and the switch stays conservative.
   VOTE_MS: 1000,
-  NEED: 3,
+  // Four, not the three this leg shipped with. One more second of the same face is the cheapest
+  // certainty available here: it costs nothing per frame and a flicker cannot survive it.
+  NEED: 4,
   // "Học mặt" holds for this long and samples every LEARN_MS, so a student who sways still covers
   // three or four poses inside one press.
   LEARN_MS: 260,
@@ -51,11 +53,22 @@ export const IDENTITY = {
   // A student enrolled from one pose has spread 0 and would match anything. The floor is the price of
   // a thin enrolment; R_SPREAD turns each student's own pose range into their own radius, so the
   // student who was sampled sloppily is held loosely instead of everyone being held tightly.
-  R_FLOOR: 0.35,
+  //
+  // 0.30, chosen 2026-11-11 against probe-gate.mjs, which puts the smallest straight-on distance
+  // between two different synthetic faces at 0.364 in these units. At 0.35 the bar sat at 96% of that
+  // gap, so a classmate could walk inside it; at 0.30 it asks for 82%. This is a synthetic-head number
+  // like every other one in this file - no real pair of children has been measured against it, which is
+  // why the plate prints d and r instead of a bare yes/no and why the operator's dropdown still wins.
+  R_FLOOR: 0.30,
   R_SPREAD: 1.8,
   // The runner-up has to be this much worse than the winner. Without it, a student with one tight
   // sample wins by a hair over the right answer and the page silently rebinds.
-  MARGIN: 1.25,
+  //
+  // 1.60, up from 1.25 with the same reasoning as R_FLOOR: at 1.25 a second candidate 25% worse was
+  // enough to attach a name, and a name attached to a run is much harder to take back than a number.
+  // A head in a two-child frame now has to beat its runner-up by 60% to be called by name at all -
+  // assignFaces() enforces this, it used to only flag it.
+  MARGIN: 1.60,
   // faceGate() thresholds. `learn` is deliberately looser than `match`: the sample bank is the only
   // place poses get recorded, so a moderately turned frame is worth keeping while enrolling, and the
   // same frame must not be allowed to choose a name. Both pairs sit at the angle where the probe put
@@ -75,6 +88,12 @@ export const IDENTITY = {
   // A dimension measured as almost noise-free would otherwise be divided by its own near-zero sigma and
   // amplified without bound, so every sigma is floored at this fraction of the average noise.
   SIGMA_FLOOR: 0.25,
+  // Below this the bank is not quiet, it is a copy of itself: enrolment from a held camera gives
+  // identical vectors, and the pooled spread then measures as float rounding rather than as noise. That
+  // number is meaningless as a scale - measured, an all-identical two-student bank turned the 0.364
+  // between the two synthetic faces into 1.146, which would have refused a name for arithmetic reasons.
+  // A bank this flat gets the plain distance instead.
+  NOISE_MIN: 1e-6,
 };
 
 // Indices in MediaPipe's 478-point face mesh. Written as names because a bare number in a distance
@@ -294,7 +313,7 @@ export class FaceMatcher {
     let sum = 0;
     for (let i = 0; i < n; i++) { sigma[i] = Math.sqrt(acc[i] / dof); sum += sigma[i] * sigma[i]; }
     const rms = Math.sqrt(sum / n);
-    if (!(rms > 0)) return null;
+    if (!(rms > IDENTITY.NOISE_MIN)) return null;
     let floored = 0;
     for (let i = 0; i < n; i++) {
       sigma[i] = Math.max(sigma[i], IDENTITY.SIGMA_FLOOR * rms);
@@ -407,6 +426,31 @@ export class FaceMatcher {
     return Math.max(this.rFloor, this.rSpread * this.spread(id));
   }
 
+  /** Closest stored sample per student, best first, each with its own radius and how full it is. */
+  ranked(vec) {
+    const per = [];
+    for (const [id, list] of this.bank) {
+      let best = Infinity;
+      for (const v of list) best = Math.min(best, this.gdist(vec, v));
+      if (!isFinite(best)) continue;
+      const radius = this.radius(id);
+      per.push({ id, dist: best, radius, ratio: best / radius, inside: best <= radius });
+    }
+    return per.sort((a, b) => a.ratio - b.ratio);
+  }
+
+  /**
+   * How many times worse the runner-up is than the winner, in ratio units.
+   *
+   * Infinity when there is nothing to compare with, and also when the winner sits exactly on a stored
+   * sample: a bank enrolled from a held camera produces ratio 0, and dividing by it would report a
+   * meaningless lead for a frame that is simply a copy of what was enrolled.
+   */
+  lead(per) {
+    if (per.length < 2 || !(per[0].ratio > 0)) return Infinity;
+    return per[1].ratio / per[0].ratio;
+  }
+
   /**
    * Every student this one frame could be, best first, without picking a winner.
    *
@@ -416,16 +460,7 @@ export class FaceMatcher {
    */
   matchAll(vec) {
     if (!Array.isArray(vec) || vec.length !== this.dims) return [];
-    const per = [];
-    for (const [id, list] of this.bank) {
-      let best = Infinity;
-      for (const v of list) best = Math.min(best, this.gdist(vec, v));
-      if (isFinite(best)) {
-        const radius = this.radius(id);
-        per.push({ id, dist: best, radius, ratio: best / radius, inside: best <= radius });
-      }
-    }
-    return per.sort((a, b) => a.ratio - b.ratio);
+    return this.ranked(vec);
   }
 
   /**
@@ -434,32 +469,35 @@ export class FaceMatcher {
    * The winner is the smallest distance divided by that student's own radius, not the raw distance:
    * a student enrolled across four poses is allowed to be matched loosely, and a student enrolled from
    * one straight-on frame is not allowed to swallow the room.
+   *
+   * `why` names the bar a refused frame missed - 'radius' (too far from the bank) or 'margin' (a
+   * classmate is nearly as close) - because an operator who sees only "không chắc" cannot tell an
+   * unsure machine from a stranger, and those are different things to act on.
    */
   match(vec) {
     if (!Array.isArray(vec) || vec.length !== this.dims || this.bank.size === 0) return null;
-    const per = [];
-    for (const [id, list] of this.bank) {
-      let best = Infinity;
-      for (const v of list) best = Math.min(best, this.gdist(vec, v));
-      if (isFinite(best)) per.push({ id, dist: best, radius: this.radius(id), ratio: best / this.radius(id) });
-    }
+    const per = this.ranked(vec);
     if (!per.length) return null;
-    per.sort((a, b) => a.ratio - b.ratio);
     const first = per[0];
     const second = per[1] || null;
+    const lead = this.lead(per);
+    const clear = lead >= this.margin;
     return {
       id: first.id,
       dist: first.dist,
       radius: first.radius,
+      ratio: first.ratio,
       second: second ? second.id : null,
       secondRatio: second ? second.ratio : null,
-      inside: first.dist <= first.radius,
-      clear: second ? second.ratio / first.ratio >= this.margin : true,
-      ok: first.dist <= first.radius && (second ? second.ratio / first.ratio >= this.margin : true),
+      lead,
+      inside: first.inside,
+      clear,
+      ok: first.inside && clear,
+      why: !first.inside ? 'radius' : (clear ? null : 'margin'),
     };
   }
 
-  /** Three agreeing frames in a row, and only three in a row: any different answer restarts the count. */
+  /** NEED agreeing frames in a row, and only NEED in a row: any different answer restarts the count. */
   vote(id) {
     if (id !== this.voteId) {
       this.voteId = id;
@@ -474,7 +512,7 @@ export class FaceMatcher {
     this.voteCount = 0;
   }
 
-  /** How many frames the current candidate has agreed on - printed, because "3/3" explains a switch. */
+  /** How many frames the current candidate has agreed on - printed, because "2/4" explains a switch. */
   get voting() {
     return { id: this.voteId, count: this.voteCount };
   }
@@ -490,7 +528,13 @@ const GATED_LAST = 1e6;
  * half-turned one in the corner does, and the loose face must not get to claim the name first. A face
  * whose best student is already taken is left unnamed and comes back flagged, because "em thứ hai trùng
  * tên bạn bên cạnh" is a fact the operator has to see, and the next candidate on the list is not a
- * second opinion - it is a name that lost the contest.
+ * second opinion - it is a name that lost a contest.
+ *
+ * A head that fails either certainty bar is left unnamed too: the radius it must sit inside, and the
+ * lead over its runner-up. Before this the crowded-frame path checked only the radius and put the
+ * near-tie in the label as advice. A name beside a head is not a caption any more than a number is:
+ * with "Ghi cùng lúc" on it opens that child's profile and writes a run into it, so the two children in
+ * one frame now clear the same bar the one child in the dropdown clears. `why` says which one missed.
  *
  * @param {Array<number[]|null>} sigs  one signature per detected face, same order as faceLandmarks
  * @param {FaceMatcher} matcher
@@ -498,7 +542,7 @@ const GATED_LAST = 1e6;
  *   last, so a child turned toward the wall cannot claim a name and leave the clear-faced one next to
  *   them wearing nothing; it still gets a name when no one else wants it, because its own run must keep
  *   ticking while it looks at its book.
- * @returns {Array} [{index, id, dist, radius, ratio, inside, taken, ambiguous, gated}]
+ * @returns {Array} [{index, id, dist, radius, ratio, lead, inside, taken, ambiguous, why, gated}]
  */
 export function assignFaces(sigs, matcher, gates) {
   const rows = sigs.map((sig, index) => ({
@@ -512,27 +556,32 @@ export function assignFaces(sigs, matcher, gates) {
   const out = new Array(sigs.length).fill(null);
   for (const row of order) {
     if (!row.cands.length) {
-      out[row.index] = { index: row.index, id: null, cands: [], gated: row.gated };
+      out[row.index] = { index: row.index, id: null, cands: [], gated: row.gated, why: 'empty' };
       continue;
     }
     const top = row.cands[0];
+    const lead = matcher.lead(row.cands);
+    const clear = lead >= matcher.margin;
     const displaced = taken.has(top.id);
+    const why = !top.inside ? 'radius' : (clear ? null : 'margin');
     // No fallback: when the winner is already worn by another head, this head is not "the next student
     // on the list", it is an unplaced one. The alternative candidates are all worse than a name that
     // just lost a contest, and a borrowed name would attach the wrong profile to a scored run. The
     // page says "trùng tên bạn bên cạnh" and the operator keeps the dropdown.
-    const hit = displaced || !top.inside ? null : top;
+    const hit = displaced || why ? null : top;
     if (hit) taken.add(hit.id);
     out[row.index] = {
       index: row.index,
       id: hit ? hit.id : null,
-      dist: hit ? hit.dist : top.dist,
-      radius: hit ? hit.radius : top.radius,
-      ratio: hit ? hit.ratio : top.ratio,
-      inside: hit ? hit.inside : false,
+      dist: top.dist,
+      radius: top.radius,
+      ratio: top.ratio,
+      lead,
+      inside: top.inside,
       taken: displaced,
       gated: row.gated,
-      ambiguous: row.cands.length > 1 && (top.ratio * IDENTITY.MARGIN) > row.cands[1].ratio,
+      ambiguous: row.cands.length > 1 && !clear,
+      why: displaced ? 'taken' : why,
       cands: row.cands,
     };
   }
